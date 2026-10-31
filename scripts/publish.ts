@@ -1,16 +1,14 @@
 // Copyright 2026 Wiva, Inc.
 // SPDX-License-Identifier: Apache-2.0
 // Publishes a build (the release pipeline's last job, after the bridges and the Mac app are built):
-//   1. a GitHub release v<RELEASE>-build.<N> with every file and SHA256SUMS: only for an unsigned test build, in
-//      this repo (a real build's is made in the public repo from the download host, see scripts/public.ts)
+//   1. a GitHub release v<RELEASE>-build.<N> with every file and SHA256SUMS (the archive of all builds)
 //   2. the download host, R2 bucket coderail-downloads behind dl.coderail.codes, which keeps only the
 //      newest build: builds/<RELEASE>-<N>/…, latest.json (read by the site and install.sh) and
 //      mac/appcast.xml (Sparkle's feed); everything older is deleted, so it stays far under R2's 10 GB.
 //   bun scripts/publish.ts [--no-github] [--no-r2]
-// Needs CODERAIL_BUILD; GH_TOKEN and GITHUB_REPOSITORY for GitHub (RELEASE_REPO names the repo latest.json links
-// to, when it isn't this one); for R2, CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (or a wrangler login).
-// Expects bridge/build/coderail-{darwin,linux}-{arm64,x64} and mac/build/CodeRail.zip with its Sparkle signature,
-// mac/build/CodeRail.zip.sparkle.
+// Needs CODERAIL_BUILD; GH_TOKEN and GITHUB_REPOSITORY for GitHub; for R2, CLOUDFLARE_ACCOUNT_ID and
+// CLOUDFLARE_API_TOKEN (or a wrangler login). Expects bridge/build/coderail-{darwin,linux}-{arm64,x64} and
+// mac/build/CodeRail.zip with its Sparkle signature, mac/build/CodeRail.zip.sparkle.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -49,7 +47,7 @@ async function run(cmd: string[], cwd = root) {
   return out.trim();
 }
 
-const repo = process.env.RELEASE_REPO ?? process.env.GITHUB_REPOSITORY;
+const repo = process.env.GITHUB_REPOSITORY;
 let githubUrl = `https://github.com/${repo ?? 'wiva-hq/CodeRail'}/releases/tag/${tag}`;
 
 // 1. GitHub

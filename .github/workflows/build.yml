@@ -1,0 +1,151 @@
+# Copyright 2026 Wiva, Inc.
+# SPDX-License-Identifier: Apache-2.0
+# Builds and publishes CodeRail for a build tag v<version>-build.<N>, on GitHub's runners:
+#   linux    checks, and the Linux bridges
+#   mac      the macOS bridges and CodeRail.app with one inside; signs them with the Developer ID, notarizes
+#            them, and signs the update for Sparkle
+#   publish  a GitHub release here, and the download host dl.coderail.codes (the newest build only)
+# The server image is docker.yml. The secrets are on the `release` environment, which only build tags can use:
+#   MACOS_CERT_P12, MACOS_CERT_PASSWORD     the Developer ID Application certificate, base64 .p12
+#   APPLE_NOTARY_KEY, APPLE_NOTARY_KEY_ID,  an App Store Connect API key (the .p8 file's text)
+#   APPLE_NOTARY_ISSUER
+#   SPARKLE_ED_PRIVATE_KEY                  the EdDSA key Sparkle updates are signed with
+#   CLOUDFLARE_API_TOKEN                    R2 edit on the account that hosts dl.coderail.codes
+#   CLOUDFLARE_ACCOUNT_ID                   that account
+name: Build
+
+on:
+  push:
+    tags: ['v*-build.*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    if: github.repository == 'wiva-hq/CodeRail'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build number
+        run: echo "CODERAIL_BUILD=${GITHUB_REF_NAME##*-build.}" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun scripts/license-headers.ts --check
+      - run: cd bridge && bun scripts/build.ts linux-x64 linux-arm64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: bridge/build/coderail-linux-*
+          retention-days: 3
+
+  mac:
+    if: github.repository == 'wiva-hq/CodeRail'
+    runs-on: macos-15
+    environment: release
+    steps:
+      - name: Build number
+        run: echo "CODERAIL_BUILD=${GITHUB_REF_NAME##*-build.}" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: cd bridge && bun scripts/build.ts darwin-arm64 darwin-x64
+
+      - name: Signing material
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          if [ -n "$MACOS_CERT_P12" ]; then
+            kc="$RUNNER_TEMP/coderail-signing.keychain-db"; pw=$(uuidgen)
+            security create-keychain -p "$pw" "$kc"
+            security set-keychain-settings -lut 3600 "$kc"
+            security unlock-keychain -p "$pw" "$kc"
+            echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign >/dev/null
+            rm -f "$RUNNER_TEMP/cert.p12"
+            security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc" >/dev/null
+            security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+            echo "SIGNING_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No MACOS_CERT_P12 secret: the Mac app is signed ad hoc"
+          fi
+          if [ -n "$APPLE_NOTARY_KEY" ]; then
+            printf '%s' "$APPLE_NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
+            { echo "CODERAIL_NOTARY_KEY=$RUNNER_TEMP/notary.p8"
+              echo "CODERAIL_NOTARY_KEY_ID=$APPLE_NOTARY_KEY_ID"
+              echo "CODERAIL_NOTARY_ISSUER=$APPLE_NOTARY_ISSUER"; } >> "$GITHUB_ENV"
+          else
+            echo "::warning::No APPLE_NOTARY_KEY secret: the Mac app isn't notarized"
+          fi
+          if [ -n "$SPARKLE_ED_PRIVATE_KEY" ]; then
+            printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle.key"
+            echo "CODERAIL_SPARKLE_KEY=$RUNNER_TEMP/sparkle.key" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build, sign and notarize the Mac app
+        env:
+          CODERAIL_REQUIRE_SIGNING: '1'
+        run: bun mac/build.ts
+
+      - name: Remove the signing material
+        if: always()
+        run: |
+          [ -n "${SIGNING_KEYCHAIN:-}" ] && security delete-keychain "$SIGNING_KEYCHAIN" || true
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/sparkle.key"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mac
+          path: |
+            mac/build/CodeRail.zip
+            mac/build/CodeRail.zip.sparkle
+            bridge/build/coderail-darwin-*
+          retention-days: 3
+
+  publish:
+    needs: [linux, mac]
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - name: Build number
+        run: echo "CODERAIL_BUILD=${GITHUB_REF_NAME##*-build.}" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux
+          path: bridge/build
+      - uses: actions/download-artifact@v8
+        with:
+          name: mac
+          path: .
+
+      - name: Publish (GitHub release and dl.coderail.codes)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bun scripts/publish.ts

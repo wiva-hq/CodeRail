@@ -1,10 +1,10 @@
 // Copyright 2026 Wiva, Inc.
 // SPDX-License-Identifier: Apache-2.0
 // Publishes a build (the release pipeline's last job, after the bridges and the Mac app are built):
-//   1. a GitHub release v<RELEASE>-build.<N> with every file and SHA256SUMS (the archive of all builds)
-//   2. the download host, R2 bucket coderail-downloads behind dl.coderail.codes, which keeps only the
-//      newest build: builds/<RELEASE>-<N>/…, latest.json (read by the site and install.sh) and
-//      mac/appcast.xml (Sparkle's feed); everything older is deleted, so it stays far under R2's 10 GB.
+//   1. a GitHub release v<RELEASE>-build.<N> with every file and SHA256SUMS: where every build is downloaded from
+//   2. the pointers to the newest one on dl.coderail.codes (R2 bucket coderail-downloads): latest.json (read by the
+//      servers for install.sh and the Mac download) and mac/appcast.xml (Sparkle's feed, the Mac app's updates),
+//      both naming that release's files; anything else in the bucket (older builds' files) is deleted.
 //   bun scripts/publish.ts [--no-github] [--no-r2]
 // Needs CODERAIL_BUILD; GH_TOKEN and GITHUB_REPOSITORY for GitHub; for R2, CLOUDFLARE_ACCOUNT_ID and
 // CLOUDFLARE_API_TOKEN (or a wrangler login). Expects bridge/build/coderail-{darwin,linux}-{arm64,x64} and
@@ -14,7 +14,6 @@ import { join } from 'node:path';
 
 const root = join(import.meta.dir, '..');
 const BUCKET = 'coderail-downloads';
-const BASE = 'https://dl.coderail.codes';
 /** The Cloudflare account that hosts the R2 bucket behind dl.coderail.codes (a secret on the release environment). */
 const ACCOUNT = process.env.CLOUDFLARE_ACCOUNT_ID ?? '';
 const version = readFileSync(join(root, 'bridge/src/env.ts'), 'utf8').match(/RELEASE = '([^']+)'/)![1];
@@ -81,7 +80,7 @@ if (!args.includes('--no-github')) {
   console.log(`GitHub release: ${githubUrl}`);
 }
 
-// 2. The download host
+// 2. The pointers on the download host
 if (!args.includes('--no-r2')) {
   if (!ACCOUNT) throw new Error('Set CLOUDFLARE_ACCOUNT_ID, or pass --no-r2');
   const sparkle = `${macZip}.sparkle`;
@@ -103,9 +102,12 @@ if (!args.includes('--no-r2')) {
     }
     console.log(`R2: ${key}`);
   };
-  const dir = `builds/${id}`;
-  const url = (name: string) => `${BASE}/${dir}/${name}`;
-  for (const f of files) await put(`${dir}/${f.name}`, f.path, f.type, 'public, max-age=31536000, immutable');
+  // (The files are the GitHub release's: R2's uploads stop at 300 MiB, and a bridge with its browser is bigger.)
+  const url = (name: string) => `https://github.com/${repo ?? 'wiva-hq/CodeRail'}/releases/download/${tag}/${name}`;
+  for (const f of files) {
+    const r = await fetch(url(f.name), { method: 'HEAD' });
+    if (!r.ok) throw new Error(`${url(f.name)} isn't downloadable (${r.status}); is the GitHub release there?`);
+  }
 
   const published = new Date();
   const latest = {
@@ -134,12 +136,11 @@ if (!args.includes('--no-r2')) {
   const tmp = join(root, 'mac/build');
   writeFileSync(join(tmp, 'latest.json'), JSON.stringify(latest, null, 2) + '\n');
   writeFileSync(join(tmp, 'appcast.xml'), appcast);
-  // The pointers last, so they never name files that aren't there yet.
   await put('latest.json', join(tmp, 'latest.json'), 'application/json', 'no-cache');
   await put('mac/appcast.xml', join(tmp, 'appcast.xml'), 'application/xml', 'no-cache');
 
-  // Only the newest build stays.
-  const keep = (key: string) => key.startsWith(`${dir}/`) || key === 'latest.json' || key === 'mac/appcast.xml';
+  // Only the pointers stay.
+  const keep = (key: string) => key === 'latest.json' || key === 'mac/appcast.xml';
   const old: string[] = [];
   let cursor = '';
   do {
@@ -155,5 +156,5 @@ if (!args.includes('--no-r2')) {
     await run(['bunx', 'wrangler', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'], root);
     console.log(`R2: deleted ${key}`);
   }
-  console.log(`Download host: ${BASE}/latest.json`);
+  console.log(`Download host: https://dl.coderail.codes/latest.json, pointing at ${githubUrl}`);
 }

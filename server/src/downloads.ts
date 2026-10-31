@@ -1,7 +1,8 @@
 // Copyright 2026 Wiva, Inc.
 // SPDX-License-Identifier: Apache-2.0
 /**
- * The download host keeps only the newest build, described by its latest.json, which scripts/publish.ts writes.
+ * The newest build, as dl.coderail.codes/latest.json describes it (scripts/publish.ts writes it): its files are on its
+ * GitHub release.
  */
 export interface Latest {
   version: string;

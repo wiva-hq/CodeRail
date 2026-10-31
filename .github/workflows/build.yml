@@ -4,7 +4,8 @@
 #   linux    checks, and the Linux bridges
 #   mac      the macOS bridges and CodeRail.app with one inside; signs them with the Developer ID, notarizes
 #            them, and signs the update for Sparkle
-#   publish  a GitHub release here, and the download host dl.coderail.codes (the newest build only)
+#   publish  a GitHub release here (the files everyone downloads), and dl.coderail.codes's latest.json and the Mac
+#            app's update feed, pointing at it
 # The server image is docker.yml. The secrets are on the `release` environment, which only build tags can use:
 #   MACOS_CERT_P12, MACOS_CERT_PASSWORD     the Developer ID Application certificate, base64 .p12
 #   APPLE_NOTARY_KEY, APPLE_NOTARY_KEY_ID,  an App Store Connect API key (the .p8 file's text)

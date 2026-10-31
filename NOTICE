@@ -1,0 +1,31 @@
+CodeRail
+Copyright 2026 Wiva, Inc.
+
+CodeRail was originally created by Wiva, Inc. (https://wiva.io).
+
+CodeRail's own source code is licensed under the Apache License, Version 2.0 (see LICENSE).
+The License grants no permission to use the "CodeRail" name or logo for a modified version
+(see section 6).
+
+Third-party software
+--------------------
+
+The bridge binaries and the Mac app bundle the following, each under its own terms. They are
+not covered by CodeRail's license.
+
+- Bun (https://bun.sh): MIT. Bun statically links WebKit's JavaScriptCore, under the
+  GNU Lesser General Public License 2; see https://github.com/oven-sh/bun/blob/main/LICENSE.md.
+- claude-agent-acp and codex-acp, from the Agent Client Protocol project
+  (https://github.com/agentclientprotocol): Apache License 2.0.
+- Claude Agent SDK (@anthropic-ai/claude-agent-sdk), a dependency of claude-agent-acp:
+  © Anthropic PBC, all rights reserved; its use is subject to Anthropic's terms at
+  https://code.claude.com/docs/en/legal-and-compliance.
+- Sparkle (https://sparkle-project.org), in the Mac app: MIT.
+
+CodeRail does not include Claude Code or Codex themselves; it runs the copies installed on
+each computer, under their own terms.
+
+The bundled browser includes @askjo/camofox-browser (https://github.com/jo-inc/camofox-browser),
+MIT, its runtime dependencies, and the Camoufox Firefox-based browser. These components retain
+their own licenses; Camoufox/Firefox and camoufox-js include code under Mozilla Public License 2.0.
+Their license files accompany the bundled runtime. CodeRail reuses its existing Bun runtime.

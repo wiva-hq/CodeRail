@@ -1,0 +1,21 @@
+{
+  "name": "@coderail/bridge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun src/main.ts",
+    "check": "tsc -p tsconfig.json",
+    "test:browser": "CODERAIL_BROWSER_TEST=1 bun test tests/browser.test.ts",
+    "build": "bun scripts/build.ts"
+  },
+  "dependencies": {
+    "@coderail/protocol": "workspace:*",
+    "fflate": "0.8.2"
+  },
+  "devDependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.94.0",
+    "@agentclientprotocol/codex-acp": "2.2.2",
+    "@types/bun": "1.4.4",
+    "typescript": "5.9.3"
+  }
+}

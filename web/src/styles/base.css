@@ -1,0 +1,279 @@
+/* Copyright 2026 Wiva, Inc.
+   SPDX-License-Identifier: Apache-2.0 */
+/*
+ * The shared classes: one style per role, the same in every place (the Claude desktop app's, design/CLAUDE-FEEL.md).
+ * The ui/ primitives (Button, Menu, Select, SegmentedControl, Switch, SettingRow, OptionRow, EmptyState, Sheet,
+ * Toaster; tooltips are lib/tip.ts) render these classes; write markup by hand only for what has no primitive.
+ * Values come from theme.css only.
+ */
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; }
+body {
+  background: var(--content);
+  color: var(--ink);
+  font: var(--w-text) var(--fs-body) / 1.4 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+#app { height: 100%; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: default; -webkit-tap-highlight-color: transparent; }
+input, textarea, select { font: inherit; color: inherit; }
+/* Links are ink, underlined (green means on, not a link). */
+a { color: inherit; text-decoration-color: var(--hair2); text-underline-offset: 2px; }
+a:hover { text-decoration-color: currentColor; }
+::selection { background: var(--accent-ring); }
+.selectable, .selectable * { -webkit-user-select: text; user-select: text; cursor: auto; }
+
+/* Focus: one ring, on the keyboard only, following the control's own shape. Text fields show focus on their frame
+   (`.field`, or a `.framed` box around a bare input) instead. */
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input:focus-visible, textarea:focus-visible, [contenteditable]:focus-visible { outline: none; }
+
+.scroll { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--hair2) transparent; }
+.scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--hair2); border-radius: 5px; border: 3px solid transparent; background-clip: padding-box; }
+.scroll::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
+.scroll::-webkit-scrollbar-track { background: transparent; }
+/* (xterm's own stylesheet paints its viewport black under the screen; a pixel of it showed at the edges.) */
+.xterm .xterm-viewport { background-color: var(--terminal-bg) !important; }
+
+/* An icon: the Forest glyph set, one round-capped stroke, solid dots (`d`), the duo-tone plane (`a`) off. */
+svg.i { display: block; flex: none; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; overflow: visible; }
+svg.i .a { display: none; }
+svg.i .d { fill: currentColor; stroke: none; }
+
+/* ---- Buttons (ui/Button.svelte). --control (32) tall, radius 8, a .5px edge, 15/20 at 435; hover 60 ms; press 120 ms. */
+.btn {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-1h); flex: none;
+  height: var(--control); padding: 0 14px; border-radius: var(--r-md); white-space: nowrap;
+  border: var(--hairline) solid var(--hair2); background: var(--panel); color: var(--ink);
+  font-size: var(--fs-body); line-height: 20px; font-weight: var(--w-control);
+  transition: background var(--t-fast) ease-out, color var(--t-fast) ease-out, border-color var(--t-fast) ease-out, box-shadow var(--t-quick) var(--ease-snap), transform var(--t-quick) var(--ease-snap);
+}
+.btn:hover { background: color-mix(in srgb, var(--panel), var(--ink) 4%); }
+.btn:active:not(:disabled) { transform: scale(0.985); background: color-mix(in srgb, var(--panel), var(--ink) 8%); }
+.btn.on { background: var(--sel); }
+.btn.primary { background: var(--primary); color: var(--onprimary); border-color: transparent; }
+.btn.primary:hover { background: var(--primaryhover); }
+.btn.primary:active:not(:disabled) { background: var(--primaryhover); }
+.btn.quiet { border-color: transparent; background: transparent; color: var(--ink2); }
+.btn.quiet:hover, .btn.quiet.on { background: var(--hover); color: var(--ink); }
+.btn.quiet:active:not(:disabled) { background: var(--sel); }
+.btn.danger { color: var(--danger-ink); }
+.btn.danger:hover { background: var(--danger-soft); }
+.btn.solid-danger { background: var(--danger-fill); color: var(--ondanger); border-color: transparent; }
+.btn.solid-danger:hover { background: var(--danger-fill); filter: brightness(0.94); }
+.btn.sm { height: 28px; padding: 0 var(--row-x); font-size: var(--fs-small); border-radius: 7px; }
+.btn.lg { height: 40px; padding: 0 var(--sp-4); font-size: var(--fs-message); border-radius: var(--r-lg); }
+.btn.block { display: flex; width: 100%; }
+.btn:disabled { color: var(--faint); background: var(--tint); border-color: var(--hair); transform: none; }
+.btn.primary:disabled { color: var(--onprimary); background: var(--primary); opacity: 0.3; }
+.btn.quiet:disabled { background: transparent; border-color: transparent; }
+.btn .kbd { font-size: var(--fs-meta); opacity: 0.6; margin-left: var(--sp-0h); font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+/* Busy: the label keeps its width, hidden; a spinner sits in the middle. */
+.btn.busy { color: transparent !important; pointer-events: none; }
+.btn.busy > :not(.btn-spin) { visibility: hidden; }
+.btn .btn-spin { position: absolute; inset: 0; margin: auto; color: var(--ink2); }
+.btn.primary .btn-spin { border-color: var(--onprimary-hair); border-top-color: var(--onprimary); }
+
+/* ---- Icon buttons: 32 square (28 `sm`, 24 `xs`), radius 8, ink2; hover/press/on fill; `on` also inks the glyph. */
+.iconbtn {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 32px; height: 32px; border-radius: var(--r-md); color: var(--ink2); background: transparent;
+  transition: background var(--t-fast) ease-out, color var(--t-fast) ease-out;
+}
+.iconbtn:hover { background: var(--hover); color: var(--ink); }
+.iconbtn:active:not(:disabled) { background: var(--sel); transition: background var(--t-quick) var(--ease-snap); }
+.iconbtn.on { background: var(--sel); color: var(--ink); }
+.iconbtn.sm { width: 28px; height: 28px; border-radius: 7px; }
+.iconbtn.xs { width: 24px; height: 24px; border-radius: var(--r-sm); }
+.iconbtn:disabled { color: var(--faint); background: transparent; }
+
+/* ---- Rows (the sidebar, Settings' sections, list columns): 32 tall, radius 8, a 20 px glyph in ink2, the label
+   --icon-gap after it in ink2; the chosen row on the selection fill, its label in ink at the control weight. */
+.row {
+  display: flex; align-items: center; gap: var(--icon-gap); height: var(--row); padding: 0 var(--row-x); border-radius: var(--r-md);
+  background: transparent; color: var(--ink2); font-size: var(--fs-body); line-height: 20px; text-align: left; width: 100%;
+  transition: background var(--t-fast) ease-out, color var(--t-fast) ease-out;
+}
+.row:hover { background: var(--hover); color: var(--ink); }
+.row:active { background: var(--sel); transition: background var(--t-quick) var(--ease-snap); }
+.row.sel, .row.on { background: var(--sel); color: var(--ink); font-weight: var(--w-control); }
+.row .ico { color: var(--ink2); display: inline-flex; flex: none; }
+
+/* "Show all 40": the last row of a list that shows only its first few (a list, a card, a page section). */
+.showall { display: flex; align-items: center; gap: var(--sp-1h); height: 28px; padding: 0 var(--row-x); border-radius: var(--r-md); color: var(--muted); font-size: var(--fs-small); text-align: left; flex: none; transition: background var(--t-fast) ease-out, color var(--t-fast) ease-out; }
+.showall:hover { background: var(--hover); color: var(--ink); }
+
+/* ---- Count badge (Needs you) */
+.count, .badge {
+  min-width: 18px; height: 18px; padding: 0 var(--sp-1h); border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--primary); color: var(--onprimary); font-size: 11px; font-weight: var(--w-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Fields: --control (32) tall beside buttons and selects; a hairline frame; hover deepens it; focus = accent edge + soft ring (120 ms). */
+.field, .framed {
+  border: var(--hairline) solid var(--hair2); background: var(--panel); color: var(--ink); border-radius: var(--r-md);
+  transition: border-color var(--t-quick) var(--ease-snap), box-shadow var(--t-quick) var(--ease-snap);
+}
+.field { height: var(--control); width: 100%; padding: 0 var(--row-x); font-size: var(--fs-body); }
+.field:hover, .framed:hover { border-color: color-mix(in srgb, var(--hair2), var(--ink) 12%); }
+.field:focus, .framed:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.field[aria-invalid='true'], .framed.bad { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+.field:disabled { background: var(--tint); color: var(--faint); }
+textarea.field { height: auto; padding: var(--sp-2) var(--row-x); resize: none; line-height: 1.45; }
+.field::placeholder, .framed input::placeholder, textarea::placeholder { color: var(--muted); }
+.framed input, .framed textarea { border: 0; background: none; min-width: 0; }
+/* A find field (`<label class="find framed"><Icon name="search" size={20} /><input …></label>`): the Claude app's
+   search, --control tall, radius 10, its glyph on the rows' glyph edge and its words on their labels' edge. */
+.find { display: flex; align-items: center; gap: var(--icon-gap); height: var(--control); padding: 0 var(--row-x); border-radius: var(--r-lg); border-color: var(--hair); color: var(--muted); flex: none; }
+.find.lg { height: var(--control); }
+.find input { flex: 1; min-width: 0; height: 100%; padding: 0; font-size: var(--fs-body); color: var(--ink); outline: none; }
+
+/* ---- Chips, cards, code */
+.chip {
+  display: inline-flex; align-items: center; gap: var(--sp-1h); height: 30px; padding: 0 var(--row-x); border-radius: var(--r-md);
+  border: var(--hairline) solid var(--hair2); background: var(--panel); color: var(--ink2); font-size: var(--fs-quiet);
+  transition: background var(--t-fast) ease-out, color var(--t-fast) ease-out;
+}
+button.chip:hover { background: color-mix(in srgb, var(--panel), var(--ink) 4%); color: var(--ink); }
+.card { background: var(--panel); border: var(--hairline) solid var(--hair); border-radius: var(--r-card); box-shadow: var(--shadow-card); }
+.code {
+  font-family: var(--mono); font-size: 13px; line-height: 20px; color: var(--ink);
+  background: var(--tint); border: var(--hairline) solid var(--hair); border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3);
+}
+.sec { font-size: var(--fs-small); line-height: 18px; font-weight: var(--w-text); color: var(--muted); }
+
+/* ---- Menus and popovers (ui/Popover, ui/Menu): radius 12, padding 6, rows 32 (two-line 44), the pop shadow with its .5px ring. */
+.popover {
+  position: fixed; z-index: var(--z-layer); min-width: 200px; padding: var(--sp-1h); overflow-y: auto; overscroll-behavior: contain;
+  background: var(--pop); border-radius: var(--r-xl); box-shadow: var(--shadow-pop); color: var(--ink);
+}
+.popover .mi {
+  display: flex; align-items: center; gap: var(--icon-gap); width: 100%; min-height: var(--row); padding: var(--sp-1) var(--row-x);
+  border-radius: var(--r-md); font-size: var(--fs-body); line-height: 20px; color: var(--ink); text-align: left;
+  transition: background var(--t-fast) ease-out;
+}
+.popover .mi:focus { background: var(--hover); }
+.popover .mi:focus-visible { outline: none; }
+.popover .mi:active:not([aria-disabled='true']) { background: var(--sel); }
+.popover .mi[aria-disabled='true'] { color: var(--faint); }
+.popover .mi .ic { color: var(--ink2); display: inline-flex; }
+.popover .mi[aria-disabled='true'] .ic { color: var(--faint); }
+.popover .mi.danger, .popover .mi.danger .ic { color: var(--danger-ink); }
+.popover .mi .kbd { margin-left: auto; padding-left: var(--sp-3); color: var(--muted); font-size: var(--fs-small); display: inline-flex; font-variant-numeric: tabular-nums; }
+.popover .mlabel { font-size: var(--fs-small); color: var(--muted); padding: var(--sp-1h) var(--row-x) var(--sp-1); }
+.popover .sep { height: var(--hairline); background: var(--hair); margin: var(--sp-1h) calc(-1 * var(--sp-1h)); }
+/* A popover that scrolls: its find field stays on top, and a soft fade shows rows are cut above or below. */
+.popover > .find { position: sticky; top: 0; z-index: var(--z-raised); }
+/* (Fades and the find share --z-raised: the find comes later, so it paints over the top fade.) */
+.popover::before, .popover::after { content: ''; position: sticky; display: block; height: var(--sp-5); z-index: var(--z-raised); pointer-events: none; opacity: 0; transition: opacity var(--t-quick) ease-out; }
+.popover::before { top: calc(-1 * var(--sp-1h)); margin: calc(-1 * var(--sp-1h)) calc(-1 * var(--sp-1h)) calc(var(--sp-1h) - var(--sp-5)); background: linear-gradient(var(--pop), transparent); }
+.popover::after { bottom: calc(-1 * var(--sp-1h)); margin: calc(var(--sp-1h) - var(--sp-5)) calc(-1 * var(--sp-1h)) calc(-1 * var(--sp-1h)); background: linear-gradient(transparent, var(--pop)); }
+.popover[data-more-top]::before, .popover[data-more-bottom]::after { opacity: 1; }
+.layer-scrim { position: fixed; inset: 0; z-index: var(--z-layer); background: transparent; }
+
+/* ---- Tooltip (lib/tip.ts) */
+.tooltip {
+  position: fixed; z-index: var(--z-tooltip); max-width: 300px; padding: 5px var(--sp-2); border-radius: 7px;
+  background: var(--tooltip-bg); color: var(--tooltip-ink); font-size: var(--fs-meta); line-height: 16px; font-weight: var(--w-control);
+  white-space: pre-line; pointer-events: none; opacity: 0; transition: opacity var(--t-quick) ease-out;
+}
+.tooltip.on { opacity: 1; }
+
+/* ---- A page (Needs you, Agents, Contacts): a title bar, then a centred column under a serif title. */
+.page { display: flex; flex-direction: column; height: 100%; background: var(--content); }
+.bar { height: var(--titlebar); flex: none; display: flex; align-items: center; gap: var(--sp-2); padding: 0 var(--row-x) 0 var(--sp-5); }
+.bar .title { font-size: var(--fs-title); font-weight: var(--w-head); letter-spacing: -0.1px; }
+.page-title { font: 500 var(--fs-page) / 36px var(--serif); letter-spacing: -0.4px; margin: 0 0 var(--sp-6); color: var(--ink); }
+.column { width: 100%; max-width: var(--page-column); margin: 0 auto; padding: var(--page-pad); }
+
+/* Section label in a card or page: --section-gap above (none above the first), --section-title to its first row. */
+.section { font-size: var(--fs-title); font-weight: var(--w-head); margin: var(--section-gap) 0 var(--section-title); display: flex; align-items: center; gap: var(--sp-2); }
+.section:first-child { margin-top: 0; }
+.section .n { color: var(--muted); font-weight: var(--w-text); }
+.quiet { color: var(--muted); font-size: var(--fs-quiet); }
+.mono { font-family: var(--mono); font-size: var(--fs-small); }
+
+/* ---- Settings rows (ui/SettingRow): the Claude app's. A group's head (16, semibold) --group-gap below the last
+   group; under it rows of --setting-row, a hairline between them: the title at the left (15, ink) with its
+   description under it (15, muted), the control at the right. */
+.group-head { font-size: var(--fs-head); line-height: 24px; font-weight: 600; letter-spacing: -0.1px; color: var(--ink); margin: var(--group-gap) 0 var(--sp-2); display: flex; align-items: center; gap: var(--sp-2); }
+.group-head:first-child { margin-top: 0; }
+.group-head .n { color: var(--muted); font-weight: var(--w-text); }
+.set { display: flex; align-items: center; gap: var(--sp-6); min-height: var(--setting-row); padding: 14px 0; }
+.set + .set { box-shadow: inset 0 var(--hairline) 0 var(--hair); }
+.set .set-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.set .set-title { font-size: var(--fs-title); line-height: 22px; color: var(--ink); display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.set .set-desc { font-size: var(--fs-title); line-height: 21px; color: var(--muted); }
+.set .set-desc a { color: inherit; text-decoration: underline; text-decoration-color: var(--hair2); }
+.set .set-ctl { flex: none; display: inline-flex; align-items: center; gap: var(--sp-2); max-width: 60%; }
+.set .set-lead { flex: none; display: inline-flex; color: var(--ink2); }
+button.set { width: 100%; text-align: left; border-radius: 0; }
+button.set .set-title { transition: color var(--t-fast) ease-out; }
+
+/* ---- A switch (ui/Switch): 36 × 20, the accent when on; 120 ms snap on track and knob. */
+.switch { width: 36px; height: 20px; border-radius: 10px; background: var(--track); position: relative; flex: none; transition: background var(--t-quick) var(--ease-snap); }
+.switch::after { content: ''; position: absolute; top: var(--sp-0h); left: var(--sp-0h); width: 16px; height: 16px; border-radius: 8px; background: var(--knob); box-shadow: var(--shadow-knob); transition: transform var(--t-quick) var(--ease-snap); }
+.switch.on { background: var(--accent); }
+.switch.on::after { transform: translateX(16px); }
+.switch:disabled { opacity: 0.5; }
+
+/* A line too long for its room fades out where it is cut (the Claude app's), instead of ending in an ellipsis: an
+   element whose style cuts a line (overflow hidden, nowrap, `text-overflow: ellipsis`) takes the class `cut`. Its
+   timeline runs only while the text overflows its box, so the fade shows only on a cut line (on an element that is
+   not cut it does nothing); a webview without scroll timelines keeps the ellipsis. A path cut at its start
+   (`direction: rtl`, so its end stays) takes `cut-start`: it fades at the left. (Only here: components use the
+   classes, never the animation itself; app/src/lib/ui.test.mjs checks it.) */
+:root { --cut: none; --cut-start: none; }
+@supports (animation-timeline: scroll()) { :root { --cut: cut 1s linear both; --cut-start: cut-start 1s linear both; } }
+.cut { animation: var(--cut); animation-timeline: scroll(self inline); }
+.cut-start { animation: var(--cut-start); animation-timeline: scroll(self inline); }
+@keyframes cut { from, to { text-overflow: clip; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); } }
+@keyframes cut-start { from, to { text-overflow: clip; -webkit-mask-image: linear-gradient(270deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(270deg, #000 calc(100% - 28px), transparent); } }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { width: 14px; height: 14px; border-radius: 50%; border: 1.6px solid var(--hair2); border-top-color: var(--ink2); animation: spin 900ms linear infinite; flex: none; }
+@keyframes pulse { 50% { opacity: 0.35; } }
+.pulse { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+@keyframes fade { from { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0ms !important; transition-duration: 0ms !important; }
+}
+/* (Settings › General › Motion: Reduced, whatever the system says.) */
+:root[data-motion='reduced'] *, :root[data-motion='reduced'] *::before, :root[data-motion='reduced'] *::after { animation-duration: 0ms !important; transition-duration: 0ms !important; }
+
+/* The menu-bar popover keeps the menu bar's compact size. */
+:root[data-window='popover'] { --fs-body: 14px; }
+
+/* The phone: a native screen, not a page. Fixed to the device (no zoom, no text inflation, no page bounce; the iOS
+   bridge turns the web view's own zoom and bounce off), the safe areas as padding, no selection or callouts on the
+   chrome (messages stay selectable), no grey flash on a tap, the system's text a little larger, touch sizes. */
+:root[data-phone] { --fs-body: 16px; --fs-dense: 15px; --fs-quiet: 14px; --fs-message: 16px; --fs-reply: 17px; --lh-reply: 26px;
+  --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px); --safe-r: env(safe-area-inset-right, 0px);
+  -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+:root[data-phone], :root[data-phone] body { position: fixed; inset: 0; width: 100%; overscroll-behavior: none; }
+:root[data-phone] body { -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; touch-action: pan-x pan-y; }
+:root[data-phone] .selectable, :root[data-phone] .selectable * { -webkit-touch-callout: default; }
+:root[data-phone] img, :root[data-phone] svg { -webkit-user-drag: none; }
+:root[data-phone] input, :root[data-phone] textarea, :root[data-phone] select { font-size: 16px; }
+:root[data-phone] .column { padding: 0 var(--gutter) var(--sp-8); }
+:root[data-phone] .showall { height: 40px; font-size: var(--fs-quiet); }
+:root[data-phone] :focus-visible { outline: none; }
+:root[data-phone] .field:focus, :root[data-phone] .framed:focus-within { box-shadow: none; border-color: var(--muted); }
+:root[data-phone] .btn:hover, :root[data-phone] .iconbtn:hover { background: transparent; }
+:root[data-phone] .btn.primary:hover { background: var(--primary); }
+:root[data-phone] .btn:active, :root[data-phone] .iconbtn:active { background: var(--sel); }
+:root[data-phone] .btn.primary:active { background: var(--primaryhover); }
+:root[data-phone] .set { min-height: 52px; padding: var(--sp-3) 0; }

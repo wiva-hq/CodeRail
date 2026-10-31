@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.local
+.DS_Store
+bridge/build/
+bridge/.cache/
+mac/build/
+*.bun-build
+mac/.cache/
+.claude/
+data/
+.env
+# (Left over from the Cloudflare setup: a local secret and its cache.)
+.dev.vars
+.wrangler/

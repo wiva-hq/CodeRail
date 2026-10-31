@@ -1,0 +1,76 @@
+/* Copyright 2026 Wiva, Inc.
+   SPDX-License-Identifier: Apache-2.0 */
+/* Markdown in the chat (the mockup's .reply, .bubble): people's words 15/22 sans, an
+   agent's reply 16.5/26 in the serif; inline code 13.5 mono on the tint with a .5px hairline, radius 5; code blocks
+   in a hairline frame with a header (language, Copy); links underlined in the text's colour; mentions marked.
+   Blocks sit --sp-3 apart; headings take --sp-5 above and --sp-2 below; a rule --sp-4 each side. */
+.md { font-size: var(--fs-message); line-height: 24px; color: var(--ink); overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; cursor: auto; }
+.md.reply { font-family: var(--reply-font, var(--sans)); font-size: var(--fs-reply); line-height: var(--lh-reply); }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 var(--sp-3); }
+/* Headings stay in the message's own face, sized from it (+6 / +3 / +1). */
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { font-family: inherit; font-weight: var(--w-strong); margin: var(--sp-5) 0 var(--sp-2); line-height: 1.3; letter-spacing: -0.1px; }
+.md h1 { font-size: calc(1em + 6px); } .md h2 { font-size: calc(1em + 3px); } .md h3, .md h4, .md h5, .md h6 { font-size: calc(1em + 1px); }
+
+/* Lists: • ◦ ‣ by depth; numbers tabular in ink2, right-aligned; a tight list keeps its items close. */
+.md ul, .md ol { margin: 0 0 var(--sp-3); padding-left: var(--sp-6); }
+.md ul { list-style: none; }
+.md ul > li { position: relative; }
+.md ul > li::before { content: '•'; position: absolute; left: calc(-1 * var(--sp-4)); width: 12px; text-align: center; color: var(--ink2); }
+.md ul ul > li::before { content: '◦'; }
+.md ul ul ul > li::before { content: '‣'; }
+.md ol > li::marker { color: var(--ink2); font-variant-numeric: tabular-nums; }
+.md li { margin: var(--sp-0h) 0; }
+.md li > p { margin: 0 0 var(--sp-1h); }
+.md li > ul, .md li > ol { margin: var(--sp-0h) 0 var(--sp-1); }
+
+.md a { color: inherit; text-decoration: underline; text-decoration-color: var(--hair2); text-underline-offset: 2px; transition: text-decoration-color var(--t-fast) ease-out; }
+.md a:hover { color: inherit; text-decoration-color: currentColor; }
+.md code { font-family: var(--mono); font-size: 13.5px; background: var(--tint); border: var(--hairline) solid var(--hair); border-radius: 5px; padding: var(--sp-0h) var(--sp-1); }
+
+/* A code block: radius 8 frame in a hairline, a 28 px header (the language, Copy), the code on the tint. */
+.md .codeblock { margin: 0 0 var(--sp-3); border: var(--hairline) solid var(--hair); border-radius: var(--r-md); overflow: hidden; background: var(--tint); font-family: var(--sans); }
+.md .cb-head { display: flex; align-items: center; height: 28px; padding: 0 var(--sp-1) 0 var(--sp-3); border-bottom: var(--hairline) solid var(--hair); }
+.md .cb-lang { flex: 1; font-size: var(--fs-meta); color: var(--muted); font-family: var(--mono); -webkit-user-select: none; user-select: none; }
+.md .cb-copy { display: inline-flex; align-items: center; gap: var(--sp-1); height: 24px; padding: 0 var(--sp-1h); border-radius: var(--r-sm); font-size: var(--fs-meta); color: var(--muted); font-weight: var(--w-control);
+  transition: background var(--t-fast) ease-out, color var(--t-fast) ease-out; -webkit-user-select: none; user-select: none; }
+.md .cb-copy:hover { background: var(--hover); color: var(--ink); }
+.md .cb-copy.done { color: var(--ink); }
+.md pre { margin: 0 0 var(--sp-3); }
+.md pre.shiki, .md pre {
+  font-family: var(--mono); font-size: 13.5px; line-height: 20px; padding: var(--row-x) var(--sp-3); border-radius: var(--r-lg);
+  background: var(--tint) !important; border: var(--hairline) solid var(--hair); color: var(--ink); overflow-x: auto; white-space: pre;
+}
+.md .codeblock pre, .md .codeblock pre.shiki { margin: 0; border: 0; border-radius: 0; background: transparent !important; }
+.md pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+.md blockquote { margin: 0 0 var(--sp-3); padding-left: var(--sp-3); border-left: 2px solid var(--hair2); color: var(--ink2); }
+
+/* Tables: a rounded hairline frame, a shaded header row, rules between rows only, cells at most 340 wide. */
+.md .tbl { margin: 0 0 var(--sp-3); border: var(--hairline) solid var(--hair2); border-radius: var(--r-md); overflow-x: auto; max-width: 100%; width: fit-content; }
+.md table { border-collapse: collapse; font-family: var(--sans); font-size: var(--fs-body); line-height: 20px; }
+.md th, .md td { padding: var(--sp-1h) var(--sp-3); text-align: left; max-width: 340px; vertical-align: top; }
+.md th { background: var(--tint); font-weight: var(--w-head); }
+.md tr + tr td, .md thead + tbody tr td { border-top: var(--hairline) solid var(--hair); }
+.md hr { border: 0; height: var(--hairline); background: var(--hair2); margin: var(--sp-4) 0; }
+.md .mention { font-weight: var(--w-strong); background: var(--sel); border-radius: var(--r-xs); padding: 0 var(--sp-0h); }
+.md .mention.me { background: var(--primary); color: var(--onprimary); }
+.md.hug p:last-child { margin-bottom: 0; }
+
+/* Shiki's css-variables theme, in the tokens' syntax colours. */
+:root {
+  --shiki-foreground: var(--ink);
+  --shiki-background: var(--tint);
+  --shiki-token-keyword: var(--syntax-keyword);
+  --shiki-token-constant: var(--syntax-number);
+  --shiki-token-function: var(--syntax-function);
+  --shiki-token-string: var(--syntax-string);
+  --shiki-token-string-expression: var(--syntax-string);
+  --shiki-token-comment: var(--syntax-comment);
+  --shiki-token-parameter: var(--syntax-property);
+  --shiki-token-punctuation: var(--syntax-punctuation);
+  --shiki-token-link: var(--syntax-tag);
+  --shiki-token-inserted: var(--diff-added-ink);
+  --shiki-token-deleted: var(--diff-removed-ink);
+  --shiki-token-changed: var(--diff-changed-ink);
+}

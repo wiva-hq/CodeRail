@@ -1,0 +1,33 @@
+# Copyright 2026 Wiva, Inc.
+# SPDX-License-Identifier: Apache-2.0
+# Makes the GitHub release for a build tag (v<version>-build.<N>), from the files the release pipeline already put on
+# dl.coderail.codes, each checked against the build's SHA256SUMS.
+name: GitHub release
+
+on:
+  push:
+    tags: ['v*-build.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.repository == 'wiva-hq/CodeRail'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The build's files
+        run: |
+          id=${GITHUB_REF_NAME#v}; id=${id/-build./-}
+          base=https://dl.coderail.codes/builds/$id
+          mkdir out && cd out
+          curl -fsSLO "$base/SHA256SUMS"
+          for f in $(awk '{print $2}' SHA256SUMS); do curl -fsSLO "$base/$f"; done
+          sha256sum -c SHA256SUMS
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          id=${GITHUB_REF_NAME#v}; version=${id%-build.*}; build=${id##*-build.}
+          gh release create "$GITHUB_REF_NAME" out/* -R "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+            --title "CodeRail $version (build $build)" --generate-notes

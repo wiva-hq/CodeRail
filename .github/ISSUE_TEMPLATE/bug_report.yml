@@ -1,0 +1,48 @@
+# Copyright 2026 Wiva, Inc.
+# SPDX-License-Identifier: Apache-2.0
+name: Bug report
+description: Something in CodeRail doesn't work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please don't include tokens, passwords or private code; and for a security problem, report it privately instead (see SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      multiple: true
+      options:
+        - Web app (desktop browser)
+        - Web app (phone)
+        - Mac app
+        - Bridge on macOS
+        - Bridge on Linux
+        - Server (Docker container)
+        - Install or self-hosting
+  - type: input
+    id: version
+    attributes:
+      label: Versions
+      description: "`coderail version` on the computer, the Mac app's version (in Finder, CodeRail → Get Info), the agent (`claude --version`, `codex --version`), and the browser or OS."
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "The bridge's log (`coderail logs`, or Show Log in the Mac app's menu), with anything private removed."
+      render: text

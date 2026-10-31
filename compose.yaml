@@ -1,0 +1,26 @@
+# Copyright 2026 Wiva, Inc.
+# SPDX-License-Identifier: Apache-2.0
+# CodeRail on one machine:  cp .env.example .env  (set SETUP_TOKEN), then  docker compose up -d
+# That pulls the released image, ghcr.io/wiva-hq/coderail; add --build to build this checkout instead (it builds
+# by itself when the image can't be pulled). Update with  docker compose pull && docker compose up -d
+# Everything it keeps (accounts, computers, chat history) is in ./data next to this file: back that folder up.
+# It serves plain HTTP on port 8080; put HTTPS in front (Caddy, Traefik, a tunnel). Have it keep the Host header (or send
+# X-Forwarded-Host) and send X-Forwarded-Proto and X-Forwarded-For, and set TRUST_PROXY=1 so they are believed; only then
+# keep the port off other machines (LISTEN=127.0.0.1:8080), or anyone could claim any address.
+services:
+  coderail:
+    image: ghcr.io/wiva-hq/coderail:latest
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${LISTEN:-8080}:8080"
+    environment:
+      SETUP_TOKEN: ${SETUP_TOKEN:?Set SETUP_TOKEN in .env, any long random string; you enter it once at /setup}
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+    volumes:
+      - ./data:/data
+    # (Stopping lets open requests finish and closes the databases cleanly.)
+    stop_grace_period: 15s

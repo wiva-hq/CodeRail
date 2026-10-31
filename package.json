@@ -1,0 +1,22 @@
+{
+  "name": "coderail",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "protocol",
+    "server",
+    "bridge",
+    "web"
+  ],
+  "scripts": {
+    "check": "cd server && bun run check && cd ../bridge && bun run check && cd ../web && bun run check",
+    "dev:web": "cd web && bun run dev",
+    "dev:server": "bun run build:web && cd server && PORT=8787 DATA_DIR=../data SETUP_TOKEN=${SETUP_TOKEN:-dev} bun run dev",
+    "build:web": "cd web && bun run build",
+    "build:bridge": "cd bridge && bun run build",
+    "build:mac": "bun mac/build.ts",
+    "release": "bun scripts/release.ts",
+    "build": "bun run build:web",
+    "start": "cd server && bun run start"
+  }
+}

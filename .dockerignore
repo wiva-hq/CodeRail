@@ -1,0 +1,20 @@
+# Only what the image builds from: protocol, server, web (see Dockerfile).
+**/node_modules
+**/dist
+.git
+.github
+.claude
+.wrangler
+data
+mac
+docs
+scripts
+bridge/src
+bridge/tests
+bridge/scripts
+bridge/build
+bridge/.cache
+*.local
+.dev.vars
+*.bun-build
+**/.DS_Store

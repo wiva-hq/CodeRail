@@ -1,0 +1,18 @@
+{
+  "name": "@coderail/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts"
+  },
+  "dependencies": {
+    "@block65/webcrypto-web-push": "2.0.0",
+    "@coderail/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "typescript": "5.9.3"
+  }
+}

@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://docs.coderail.codes"><img alt="Docs" src="https://img.shields.io/badge/docs-docs.coderail.codes-18181b?style=flat-square"></a>
-  <img alt="Server: Docker" src="https://img.shields.io/badge/server-Docker-2496ed?style=flat-square&logo=docker&logoColor=white">
+  <a href="https://github.com/wiva-hq/CodeRail/pkgs/container/coderail"><img alt="Server: Docker" src="https://img.shields.io/badge/server-Docker-2496ed?style=flat-square&logo=docker&logoColor=white"></a>
   <img alt="Computers: macOS and Linux" src="https://img.shields.io/badge/computers-macOS%20·%20Linux-52525b?style=flat-square">
   <img alt="Status: early" src="https://img.shields.io/badge/status-0.0.1%20early-f59e0b?style=flat-square">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-2563eb?style=flat-square"></a>
@@ -93,6 +93,9 @@ cp .env.example .env            # set SETUP_TOKEN
 docker compose up -d            # the image from ghcr.io; everything it keeps is in ./data
 ```
 
+The image is [`ghcr.io/wiva-hq/coderail`](https://github.com/wiva-hq/CodeRail/pkgs/container/coderail)
+(amd64 and arm64). Update with `git pull && docker compose pull && docker compose up -d`.
+
 **2 · Create the first admin** at `https://your-site/setup` with that token.
 
 **3 · Add a computer.** On a Mac: **Machines → Download for Mac** and approve the code. On Linux:
@@ -101,6 +104,7 @@ docker compose up -d            # the image from ghcr.io; everything it keeps is
 curl -fsSL https://your-site/install.sh | sh
 ```
 
+Every build is also on [Releases](https://github.com/wiva-hq/CodeRail/releases), with its checksums.
 Everything else (roles, the browser, phones, troubleshooting) is in the **[documentation](https://docs.coderail.codes)**.
 
 ## Security, in short

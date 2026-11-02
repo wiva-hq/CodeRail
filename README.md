@@ -31,6 +31,7 @@
   <a href="https://docs.coderail.codes/getting-started/quickstart"><b>Quickstart</b></a> &nbsp;·&nbsp;
   <a href="https://docs.coderail.codes/self-hosting/deploy">Self-hosting</a> &nbsp;·&nbsp;
   <a href="https://docs.coderail.codes/getting-started/how-it-works">How it works</a> &nbsp;·&nbsp;
+  <a href="https://forms.gle/1TX18SR3xVgiWCjC7">Enterprise</a> &nbsp;·&nbsp;
   <a href="https://github.com/wiva-hq/CodeRail/issues/new/choose">Report an issue</a>
 </p>
 
@@ -113,6 +114,10 @@ Self-hosted, outbound-only computers, no AI credentials, invite-only accounts, p
 again on the computer, signed and notarized Mac builds. Not end-to-end encrypted: your server keeps the history.
 Read the [security model](https://docs.coderail.codes/reference/security); report vulnerabilities privately per
 [SECURITY.md](SECURITY.md).
+
+## Enterprise
+
+For the enterprise version of CodeRail, [send us your details and requirements](https://forms.gle/1TX18SR3xVgiWCjC7).
 
 ## Development
 

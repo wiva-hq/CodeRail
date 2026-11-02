@@ -7,7 +7,7 @@
   // invites (admins), Audit log. On the phone the sections are a row of tabs over the page.
   import { onMount, untrack } from 'svelte';
   import WivaBadge from '../WivaBadge.svelte';
-  import { HARNESSES, type Role } from '@coderail/protocol';
+  import { HARNESSES, type MachineSummary, type Role } from '@coderail/protocol';
   import { api, plainError, type AuditRow, type Grant, type Invite, type UserRow } from '../../lib/api';
   import { app, copyText } from '../../lib/app.svelte';
   import { router, paths } from '../../lib/router.svelte';
@@ -115,9 +115,14 @@
     if (!n || !m || n === m.name) return;
     if (await app.act(() => api.renameMachine(id, n), 'Renamed')) m.name = n;
   }
+  // (Relinking a computer makes a new machine with the same name and hostname; this tells the two apart.)
+  function machineLine(m: MachineSummary) {
+    const state = m.online ? 'online' : m.lastSeen ? `offline, seen ${ago(m.lastSeen, app.now)}` : 'offline';
+    return [m.info?.hostname, state, `linked ${dateTime(m.createdAt)}`].filter(Boolean).join(' · ');
+  }
   function removeMachine(id: string) {
     const m = app.machine(id);
-    app.confirmIt({ title: `Remove ${m?.name ?? 'this computer'}?`, body: 'Its token is revoked and its bridge disconnected. Its sessions’ history here goes. Link it again to bring it back.', yes: 'Remove', danger: true,
+    app.confirmIt({ title: `Remove ${m?.name ?? 'this computer'}?`, body: `${m ? `This is the one ${machineLine(m)}. ` : ''}Its token is revoked and its bridge disconnected. Its sessions’ history here goes. Link it again to bring it back.`, yes: 'Remove', danger: true,
       run: async () => { await api.removeMachine(id); app.dropConn(id); app.machines = app.machines.filter((x) => x.id !== id); } });
   }
   function removeGrant(id: string, g: Grant) {
@@ -261,7 +266,7 @@
             {@const gs = grants[m.id]}
             {@const free = (users ?? []).filter((u) => !u.disabled && !(gs ?? []).some((g) => g.userId === u.id))}
             <section class="mach" id="m-{m.id}">
-              <h2 class="group-head"><span class="sdot" class:on={m.online}></span><a class="mlink" href={paths.machine(m.id)}>{m.name}</a><span class="n">{m.info?.hostname ?? ''}</span></h2>
+              <h2 class="group-head"><span class="sdot" class:on={m.online}></span><a class="mlink" href={paths.machine(m.id)}>{m.name}</a><span class="n">{machineLine(m)}</span></h2>
               <SettingRow title="Name">
                 {#snippet control()}<input class="field nm" bind:value={names[m.id]} onblur={() => rename(m.id)} onkeydown={(e) => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }} />{/snippet}
               </SettingRow>

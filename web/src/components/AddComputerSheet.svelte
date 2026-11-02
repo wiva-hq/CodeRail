@@ -20,6 +20,10 @@
 {#snippet cmd(text: string, what: string)}
   <div class="cmd"><code class="selectable">{text}</code><Button variant="icon" size="sm" icon="copy" tip="Copy {what}" onclick={() => copyText(text, 'Copied')} /></div>
 {/snippet}
+<!-- (The approval page opens on the computer being linked; from any other device the code is typed in at /link.) -->
+{#snippet enter()}
+  <span class="q">It opens the approval page on that computer. Approving from here? <a href="/link">Enter the code</a></span>
+{/snippet}
 
 <Sheet title="Install CodeRail Bridge" width={520} {onclose} autofocus={false}>
   {#if hasMacApp}
@@ -31,16 +35,17 @@
       <li><span class="n">1</span><div><b>Download CodeRail for Mac</b><span class="q">macOS 13 or later</span>
         <div class="act"><Button variant="primary" icon="download" onclick={() => (location.href = '/download/CodeRail.zip')}>Download for Mac</Button></div></div></li>
       <li><span class="n">2</span><div><b>Open it</b><span class="q">Already have it? <a href={openApp}>Open it to link</a></span></div></li>
-      <li><span class="n">3</span><div><b>Approve the code it shows</b></div></li>
+      <li><span class="n">3</span><div><b>Approve the code it shows</b>{@render enter()}</div></li>
     {:else}
       <li><span class="n">1</span><div><b>Run this on the computer</b><span class="q">macOS or Linux</span>
         {@render cmd(install, 'install command')}</div></li>
-      <li><span class="n">2</span><div><b>Approve the code it prints</b></div></li>
+      <li><span class="n">2</span><div><b>Approve the code it prints</b>{@render enter()}</div></li>
     {/if}
   </ol>
   <div class="foot">
     <span class="q">Bridge already installed? Link it with</span>
     {@render cmd(link, 'link command')}
+    {@render enter()}
   </div>
 </Sheet>
 

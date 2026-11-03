@@ -1,0 +1,8 @@
+{
+  "name": "coderail-windows-poc",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "node-pty": "1.1.0"
+  }
+}

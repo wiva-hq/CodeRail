@@ -1,22 +1,31 @@
 // Copyright 2026 Wiva, Inc.
 // SPDX-License-Identifier: Apache-2.0
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, unlinkSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { Bridge } from './bridge';
 import { type Config, loadConfig, saveConfig } from './config';
-import { CONFIG_PATH, HOME, LOG_PATH, STATE_DIR, STATE_PATH, VERSION, hasFullDiskAccess, log, machineBasics, run, setFullDiskAccess } from './env';
+import { CONFIG_PATH, HOME, LOG_PATH, STATE_DIR, STATE_PATH, VERSION, hasFullDiskAccess, log, machineBasics, setFullDiskAccess } from './env';
 import { detect } from './agents';
 import { HARNESSES } from '@coderail/protocol';
+import { platform } from './platform';
+declare global { var __CODERAIL_COMPILED__: boolean | undefined; }
 
 const HELP = `CodeRail bridge ${VERSION}: puts this computer's coding agents on your CodeRail site.
 
 Usage:
+  coderail install         Windows: install this binary for the current user; then pair
+  coderail uninstall       Windows: unregister and schedule removal after this CLI exits
+  coderail update [--manifest <url>]
+                          Windows: verify and stage an update, then let the supervisor activate it
   coderail link <https://your-coderail-site> [--name <name>] [--no-service] [--json]
                           Link this computer (you approve it in the browser), then run as a service
+  coderail pair <https://your-coderail-site>
+                          Alias for link
+  coderail restart        Windows: restart the Bridge through its persistent supervisor
   coderail run            Run in the foreground
   coderail status [--json]
                           Show the link and the service
-  coderail logs           Follow the service's log
+  coderail logs [-f]      Windows: recent service log; -f follows new output
   coderail service install|uninstall|restart
   coderail unlink         Stop the service and forget the link
   coderail access [--wait <seconds>]
@@ -24,23 +33,80 @@ Usage:
   coderail version
 `;
 
-const LABEL = 'codes.coderail.bridge';
-
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   switch (cmd) {
+    case 'install':
+      if (platform.os === 'win32') {
+        if (!globalThis.__CODERAIL_COMPILED__) throw new Error('Install using the compiled Windows executable');
+        const { installPrepared } = await import('./platform/win32/install-transaction');
+        const result = await installPrepared(STATE_DIR, process.execPath, VERSION);
+        console.log(`Installed ${VERSION}: ${result.installed.executable}`);
+        if (result.notification?.status === 'unavailable') console.warn(`Environment notification unavailable (${result.notification.reason}); open a new login session if PATH is stale.`);
+        console.log(`Pair next: "${result.installed.executable}" pair https://your-coderail-site`);
+        console.log('Network: allow outbound HTTPS/WebSocket to your site. No inbound firewall rule or administrator access is required by the bridge.');
+        return;
+      }
+      break;
+    case 'uninstall':
+      if (platform.os === 'win32') {
+        const { uninstallOwned } = await import('./platform/win32/lifecycle');
+        const result = await uninstallOwned(STATE_DIR);
+        console.log(`Startup and owned PATH entry removed. Cleanup scheduled after this CLI exits: ${result.installationRoot}`);
+        if (result.notification?.status === 'unavailable') console.warn(`Environment notification unavailable (${result.notification.reason}); existing terminals keep their old PATH.`);
+        console.log(`If the directory remains, inspect cleanup-error-${result.actor.nonce}.txt there.`);
+        return;
+      }
+      break;
+    case 'update':
+      if (platform.os === 'win32') {
+        const {readInstallation,guardInstallationRoot}=await import('./platform/win32/install-files');
+        const root=await guardInstallationRoot(STATE_DIR),installed=readInstallation(root);
+        if(!installed)throw new Error('Install the Windows package before updating');
+        const config=loadConfig(),index=args.indexOf('--manifest');
+        const url=index>=0?args[index+1]:config?`${config.server}/api/version/windows-x64`:null;
+        if(!url)throw new Error('Pair this installation, or provide --manifest <https-url>');
+        const {fetchManifest,downloadAndStage}=await import('./platform/win32/update-manifest');
+        const manifest=await fetchManifest(url);
+        if(manifest.version===installed.version){console.log(`Already up to date: ${installed.version}`);return;}
+        const components=(version:string)=>version.split(/[.+]/).map(BigInt);
+        const current=components(installed.version),next=components(manifest.version);
+        let newer=false;for(let i=0;i<4;i++){if(next[i]>current[i]){newer=true;break;}if(next[i]<current[i])break;}
+        if(!newer)throw new Error('Refusing a manifest downgrade; automatic rollback uses the owned previous generation');
+        const {UserService}=await import('./platform/win32/service');
+        const service=new UserService(),spec=await serviceSpec();
+        if(!(await service.status(spec)).running){if(!config)throw new Error('Pair and start this installation before updating');await service.start(spec);}
+        const {assertUpdateSupport,requestUpdate}=await import('./platform/win32/update-request');
+        await assertUpdateSupport(root);
+        const staged=await downloadAndStage(root,manifest),result=await requestUpdate(root,staged);
+        console.log(`Update ${result.version} scheduled after this CLI exits.`);
+        console.log(`Result: ${join(root,'update-result-'+result.nonce)}; failures: ${join(root,'update-error-'+result.nonce+'.txt')}`);
+        return;
+      }
+      break;
     case 'link':
+    case 'pair':
       return link(args);
     case 'run':
       return runBridge();
     case 'status':
       return status(args.includes('--json'));
     case 'logs':
-      return void (await Bun.spawn(['tail', '-n', '100', '-f', LOG_PATH], { stdout: 'inherit', stderr: 'inherit' }).exited);
+      if (platform.os === 'win32' && !args.includes('-f')) {
+        const { printLogs } = await import('./platform/win32/logs');
+        return printLogs(LOG_PATH);
+      }
+      return platform.service.followLogs(LOG_PATH);
     case 'service':
       if (args[0] === 'install' || args[0] === 'restart') return installService();
       if (args[0] === 'uninstall') return uninstallService();
       break;
+    case 'restart':
+      if (platform.os === 'win32') {
+        const { UserService } = await import('./platform/win32/service');
+        return new UserService().restart(await serviceSpec());
+      }
+      return installService();
     case 'unlink':
       await uninstallService();
       if (existsSync(CONFIG_PATH)) unlinkSync(CONFIG_PATH);
@@ -94,7 +160,7 @@ async function link(args: string[]) {
   });
   if (!process.env.CODERAIL_NO_OPEN) {
     try {
-      Bun.spawn([process.platform === 'darwin' ? 'open' : 'xdg-open', start.url], { stdout: 'ignore', stderr: 'ignore' });
+      platform.shell.openExternal(start.url);
     } catch {}
   }
 
@@ -147,7 +213,7 @@ async function access(args: string[]) {
 }
 
 async function post(server: string, path: string, body: unknown) {
-  const res = await fetch(server + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const res = await fetch(server + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), ...(platform.net.proxyFor ? { proxy: platform.net.proxyFor(server) } : {}) });
   const data: any = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? `${res.status} ${res.statusText}`);
   return data;
@@ -161,133 +227,89 @@ function runBridge() {
   }
   log(`CodeRail bridge ${VERSION} for "${config.name}" (${config.machineId})`);
   const bridge = new Bridge(config);
+  let stopping = false;
+  let control: ReturnType<typeof setInterval> | undefined;
   bridge.start();
   const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    if (control) clearInterval(control);
     log('stopping');
     bridge.stop();
     setTimeout(() => process.exit(0), 300);
   };
-  process.on('SIGINT', stop);
-  process.on('SIGTERM', stop);
+  platform.process.onShutdown(stop);
+  const request = platform.os === 'win32' ? process.env.CODERAIL_STOP_FILE : undefined;
+  if (request) {
+    const root = realpathSync.native(STATE_DIR), parent = realpathSync.native(dirname(request));
+    if (root.toLowerCase() !== parent.toLowerCase() || !/^bridge-stop-[a-f0-9]{32}$/.test(basename(request))) throw new Error('Invalid supervisor shutdown path');
+    control = setInterval(() => {
+      try {
+        const entry = lstatSync(request);
+        if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('Supervisor shutdown request must be a regular file');
+        const real = realpathSync.native(request);
+        if (dirname(real).toLowerCase() !== root.toLowerCase()) throw new Error('Supervisor shutdown request escaped private directory');
+        stop();
+      } catch (error: any) { if (error.code !== 'ENOENT') { log('supervisor control failed', error); } }
+    }, 100);
+  }
 }
 
 async function status(json: boolean) {
   const config = loadConfig();
-  let service: string;
-  if (process.platform === 'darwin') {
-    const r = await run(['launchctl', 'print', `gui/${process.getuid!()}/${LABEL}`]);
-    service = r.code === 0 ? (r.stdout.match(/state = (\w+)/)?.[1] ?? 'loaded') : 'not installed';
-  } else {
-    const r = await run(['systemctl', '--user', 'is-active', 'coderail']);
-    service = r.stdout.trim() || 'not installed';
-  }
+  const service = await platform.service.status();
+  let resources: Awaited<ReturnType<NonNullable<typeof platform.service.details>>> | undefined;
+  let resourcesError: string | undefined;
+  try { resources = await platform.service.details?.(); }
+  catch (error) { resourcesError = error instanceof Error ? error.message : String(error); }
   if (json) {
     let state: unknown = null;
     try {
       state = JSON.parse(readFileSync(STATE_PATH, 'utf8'));
     } catch {}
     const link = config && { server: config.server, name: config.name, machineId: config.machineId };
-    console.log(JSON.stringify({ version: VERSION, link, service, state, log: LOG_PATH }));
+    console.log(JSON.stringify({ version: VERSION, link, service, state, log: LOG_PATH, resources, resourcesError }));
     return;
   }
   console.log(config ? `Linked to ${config.server} as "${config.name}" (${config.machineId})` : 'Not linked');
   console.log(`Service: ${service}`);
+  if (resources?.running) {
+    console.log(`Processes: ${resources.processes?.map(item => item.pid).join(', ')}`);
+    console.log(`Memory: working set ${resources.workingSetBytes} bytes; private ${resources.privateBytes} bytes (tree sum)`);
+    console.log(`Listening: ${resources.ports?.map(item => `${item.address}:${item.port} (pid ${item.pid})`).join(', ') || 'none'}`);
+  }
+  if (resourcesError) console.log(`Resources unavailable: ${resourcesError}`);
   console.log(`Log: ${LOG_PATH}`);
 }
 
 /** How to start this bridge again: the built binary, or bun with this script in development. */
 function selfCommand(): string[] {
+  if (globalThis.__CODERAIL_COMPILED__) return [process.execPath];
   const script = process.argv[1];
-  if (script && /\.(ts|js)$/.test(script) && !script.startsWith('/$bunfs')) return [process.execPath, script];
+  const embedded = script && (/^\/\$bunfs[\\/]/.test(script) || /^[a-z]:[\\/]~BUN[\\/]/i.test(script));
+  if (script && /\.(ts|js)$/.test(script) && !embedded) return [process.execPath, script];
   return [process.execPath];
 }
 
-async function installService(quiet = false) {
-  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
-  const cmd = [...selfCommand(), 'run'];
-  if (process.platform === 'darwin') {
-    const plist = join(HOME, 'Library/LaunchAgents', `${LABEL}.plist`);
-    mkdirSync(join(HOME, 'Library/LaunchAgents'), { recursive: true });
-    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
-    writeFileSync(
-      plist,
-      `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>${LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>${cmd.map((c) => `<string>${esc(c)}</string>`).join('')}</array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>ThrottleInterval</key><integer>10</integer>
-  <key>WorkingDirectory</key><string>${esc(HOME)}</string>
-  <key>StandardOutPath</key><string>${esc(LOG_PATH)}</string>
-  <key>StandardErrorPath</key><string>${esc(LOG_PATH)}</string>
-  <key>ProcessType</key><string>Interactive</string>
-</dict>
-</plist>
-`,
-    );
-    const domain = `gui/${process.getuid!()}`;
-    // bootout returns before the old service has stopped, and bootstrap fails while it's still there.
-    await run(['launchctl', 'bootout', `${domain}/${LABEL}`]);
-    for (let i = 0; i < 50 && (await run(['launchctl', 'print', `${domain}/${LABEL}`])).code === 0; i++) await Bun.sleep(100);
-    let r = await run(['launchctl', 'bootstrap', domain, plist]);
-    for (let i = 0; i < 5 && r.code !== 0; i++) {
-      await Bun.sleep(500);
-      r = await run(['launchctl', 'bootstrap', domain, plist]);
-    }
-    if (r.code !== 0) {
-      console.error(`launchctl could not start the service: ${r.stderr.trim()}`);
-      process.exit(1);
-    }
-    if (!quiet) console.log('Service installed (launchd).');
-  } else if (process.platform === 'linux') {
-    const dir = join(HOME, '.config/systemd/user');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, 'coderail.service'),
-      `[Unit]
-Description=CodeRail bridge
-After=network-online.target
-
-[Service]
-ExecStart=${cmd.map((c) => `"${c.replace(/[\\"]/g, '\\$&').replace(/%/g, '%%')}"`).join(' ')}
-Restart=on-failure
-RestartSec=5
-StandardOutput=append:${LOG_PATH}
-StandardError=append:${LOG_PATH}
-
-[Install]
-WantedBy=default.target
-`,
-    );
-    await run(['systemctl', '--user', 'daemon-reload']);
-    const r = await run(['systemctl', '--user', 'enable', '--now', 'coderail']);
-    if (r.code !== 0) {
-      console.error(`systemctl could not start the service: ${r.stderr.trim()}`);
-      process.exit(1);
-    }
-    await run(['systemctl', '--user', 'restart', 'coderail']);
-    if (!quiet) console.log('Service installed (systemd --user). For it to run while you are logged out: loginctl enable-linger');
-  } else {
-    console.error('Running as a service is not supported here yet; use coderail run.');
+async function serviceSpec(quiet = false) {
+  let command=selfCommand();
+  if(platform.os==='win32'){
+    const {readInstallation,guardInstallationRoot}=await import('./platform/win32/install-files');
+    const root=await guardInstallationRoot(STATE_DIR),installed=readInstallation(root);
+    if(installed){if(installed.executable!==join(root,'bin/current/coderail.exe'))throw new Error('Invalid installed command ownership');command=[installed.executable];}
   }
+  return { command: [...command, 'run'], home: HOME, stateDir: STATE_DIR, logPath: LOG_PATH, quiet };
+}
+
+async function installService(quiet = false) {
+  await platform.service.install(await serviceSpec(quiet));
 }
 
 async function uninstallService() {
-  if (process.platform === 'darwin') {
-    await run(['launchctl', 'bootout', `gui/${process.getuid!()}/${LABEL}`]);
-    const plist = join(HOME, 'Library/LaunchAgents', `${LABEL}.plist`);
-    if (existsSync(plist)) unlinkSync(plist);
-  } else if (process.platform === 'linux') {
-    await run(['systemctl', '--user', 'disable', '--now', 'coderail']);
-    rmSync(join(HOME, '.config/systemd/user/coderail.service'), { force: true });
-  }
+  await platform.service.uninstall(await serviceSpec());
 }
 
 main().catch((e) => {
-  console.error(e?.message ?? e);
+  console.error(process.env.CODERAIL_DEBUG ? (e?.stack ?? e) : (e?.message ?? e));
   process.exit(1);
 });

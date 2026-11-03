@@ -1,0 +1,43 @@
+// Copyright 2026 Wiva, Inc.
+// SPDX-License-Identifier: Apache-2.0
+const ws = new WebSocket(process.argv[2]);
+let child, configured = false;
+function send(value) {
+  if (ws.readyState !== 1 || ws.bufferedAmount > 4 * 1024 * 1024) throw new Error('Managed IPC disconnected or output backpressure exceeded');
+  ws.send(JSON.stringify(value));
+}
+ws.onmessage = async event => {
+  try {
+    const message = JSON.parse(event.data);
+    if (message.type === 'start') {
+      if (configured) throw new Error('Worker already configured'); configured = true;
+      const env = { ...process.env };
+      delete env.CODERAIL_STOP_FILE;
+      if (!message.keepBun) delete env.BUN_BE_BUN;
+      child = Bun.spawn(message.argv, {
+        cwd: message.cwd, env, windowsHide: true,
+        ...(message.terminal ? { terminal: { cols: message.cols, rows: message.rows, data(_, bytes) { send({ type: 'data', channel: 'terminal', data: Buffer.from(bytes).toString('base64') }); } } }
+          : { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' }),
+      });
+      send({ type: 'ready', pid: child.pid });
+      const readers = message.terminal ? [] : ['stdout', 'stderr'].map(channel => (async () => {
+        for await (const bytes of child[channel]) for (let offset = 0; offset < bytes.length; offset += 65536) {
+          send({ type: 'data', channel, data: Buffer.from(bytes.subarray(offset, offset + 65536)).toString('base64') });
+          // Yield to the socket drain; never enqueue an arbitrarily large single frame.
+          if (ws.bufferedAmount > 1024 * 1024) await Bun.sleep(1);
+        }
+      })());
+      const [code] = await Promise.all([child.exited, ...readers]);
+      send({ type: 'exit', code });
+      // Parent owns the Job and closes it after receiving exit; never kill just the child.
+    } else if (!child) throw new Error('Worker not ready');
+    else if (message.type === 'input') {
+      const bytes = Buffer.from(message.data, 'base64');
+      if (child.terminal) child.terminal.write(bytes);
+      else { child.stdin.write(bytes); await child.stdin.flush(); }
+    } else if (message.type === 'resize') child.terminal.resize(message.cols, message.rows);
+    else throw new Error('Unknown managed IPC request');
+  } catch (error) { try { send({ type: 'error', error: String(error) }); } finally { ws.close(); } }
+};
+ws.onclose = () => process.exit(1);
+ws.onerror = () => process.exit(1);

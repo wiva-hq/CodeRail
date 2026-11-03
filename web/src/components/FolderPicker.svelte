@@ -53,6 +53,8 @@
   /** The path being typed, or null; why the last one typed couldn't be opened. */
   let typing = $state<string | null>(null);
   let typeError = $state<string | null>(null);
+  /** A Windows path: it starts at a drive (C:/) rather than at /. */
+  const drive = /^[A-Za-z]:[\\/]/;
   let checking = $state(false);
   function startTyping() { typing = tilde(value, home); typeError = null; }
   function focusPath(el: HTMLInputElement) {
@@ -63,8 +65,10 @@
   async function goTyped() {
     const t = (typing ?? '').trim();
     if (!t) return;
-    const path = untilde(t, home).replace(/(.)\/+$/, '$1');
-    if (!path.startsWith('/')) { typeError = 'Type a full path, starting with / or ~'; return; }
+    const typed = untilde(t, home);
+    // (Windows: C:\Users\me as C:/Users/me, and a drive's root keeps its slash.)
+    const path = (drive.test(typed) ? typed.replaceAll('\\', '/') : typed).replace(/([^:])\/+$/, '$1');
+    if (!path.startsWith('/') && !drive.test(path)) { typeError = 'Type a full path, starting with / or ~'; return; }
     checking = true; typeError = null;
     try {
       await conn.call('fs.list', { path, hidden: false });
@@ -89,8 +93,8 @@
     if (!e) return;
     const name = e.name.trim();
     editing = null;
-    if (!name || name.includes('/') || name === '.' || name === '..') { if (name) app.toast('That isn’t a folder name', 'warning'); return; }
-    const target = `${value === '/' ? '' : value}/${name}`;
+    if (!name || /[\\/]/.test(name) || name === '.' || name === '..') { if (name) app.toast('That isn’t a folder name', 'warning'); return; }
+    const target = `${value.replace(/\/$/, '')}/${name}`;
     try {
       if (e.path === null) {
         await conn.call('fs.mkdir', { path: target });
@@ -118,13 +122,16 @@
     if (id === 'trash') trash(d);
   }
 
+  /** Whether the folder shown is a root or inside it (a drive root, C:/, ends in its slash). */
+  const within = (r: string) => value === r || value.startsWith(r.endsWith('/') ? r : r + '/');
   /** Up stops at a root (an operator limited to folders can't leave them). */
-  const atRoot = $derived(roots.some((r) => r === value) || value === '/');
+  const atRoot = $derived(roots.some((r) => r === value) || value === '/' || /^[A-Za-z]:\/$/.test(value));
   const crumbs = $derived.by(() => {
-    const root = roots.filter((r) => value === r || value.startsWith(r + '/')).sort((a, b) => b.length - a.length)[0] ?? '';
+    const root = roots.filter((r) => within(r)).sort((a, b) => b.length - a.length)[0]
+      ?? value.match(/^[A-Za-z]:\//)?.[0] ?? '';
     const rest = value.slice(root.length).split('/').filter(Boolean);
-    const out = [{ label: root ? tilde(root, home) : '/', path: root || '/' }];
-    let at = root;
+    const out = [{ label: !root ? '/' : roots.includes(root) ? tilde(root, home) : root.slice(0, -1), path: root || '/' }];
+    let at = root.replace(/\/$/, '');
     for (const r of rest) { at = `${at}/${r}`; out.push({ label: r, path: at }); }
     return out;
   });
@@ -154,7 +161,7 @@
   </div>
   {#if typing !== null && typeError}<div class="perr" role="alert"><Icon name="warning" size={14} />{typeError}</div>{/if}
   {#if roots.length > 1}
-    <div class="roots">{#each roots as r (r)}<button class="chip" class:on={value === r || value.startsWith(r + '/')} onclick={() => (value = r)}>{tilde(r, home)}</button>{/each}</div>
+    <div class="roots">{#each roots as r (r)}<button class="chip" class:on={within(r)} onclick={() => (value = r)}>{tilde(r, home)}</button>{/each}</div>
   {/if}
   <div class="list scroll" style:height="{height}px">
     {#if error}<div class="note bad"><Icon name="warning" size={14} />{error}</div>

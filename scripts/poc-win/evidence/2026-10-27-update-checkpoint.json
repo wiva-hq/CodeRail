@@ -1,0 +1,52 @@
+{
+  "dateUtc": "2026-10-27T15:30:27Z",
+  "branch": "codex/windows-bridge-phase2-4",
+  "runtime": "Bun 1.4.4",
+  "suite": {
+    "passed": 96,
+    "failed": 0,
+    "assertions": 612,
+    "files": 50,
+    "seconds": 159.04
+  },
+  "checks": {
+    "errors": 0,
+    "existingWarnings": 1,
+    "bridgeTsc": true,
+    "pocTsc": true
+  },
+  "compiledDefault": {
+    "version": "0.0.1+0",
+    "bytes": 119851520,
+    "sha256": "2e1b7ed2e8c00ccbfeda71afebebba04ef5e36666617b9372d47f1faed00121f",
+    "pairedUninstallPassed": true
+  },
+  "compiledUpdate": {
+    "from": "0.0.1+900001",
+    "to": "0.0.1+900002",
+    "supervisorPidStable": true,
+    "badShaRefused": true,
+    "previousExecutable": true,
+    "reconnectGapMs": 2007,
+    "updateMs": 8466,
+    "realPathRestored": true,
+    "startupRemoved": true,
+    "installedImageRemoved": true,
+    "ownedServiceProcessesRemaining": 0,
+    "cloudflareE2E": false
+  },
+  "github": {
+    "role": "admin",
+    "adminOrgScope": true,
+    "windowsRunnerCount": 0,
+    "runnerTypes": [
+      "Linux X64",
+      "macOS ARM64"
+    ],
+    "actionsTriggered": false
+  },
+  "gate3": false,
+  "gate4": false,
+  "pushed": false,
+  "deployed": false
+}

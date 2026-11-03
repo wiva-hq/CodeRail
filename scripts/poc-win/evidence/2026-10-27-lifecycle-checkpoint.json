@@ -1,0 +1,72 @@
+{
+  "dateUtc": "2026-10-27T11:53:52Z",
+  "branch": "codex/windows-bridge-phase2-4",
+  "runtime": "Bun 1.4.4",
+  "host": "Windows 11 x64 non-elevated current account",
+  "suite": {
+    "passed": 71,
+    "failed": 0,
+    "assertions": 415,
+    "files": 36,
+    "seconds": 91.39,
+    "log": "scripts/poc-win/artifacts/latest-regression.log"
+  },
+  "afterSuite": {
+    "netAndIdentity": {
+      "passed": 2,
+      "assertions": 17
+    },
+    "compiledCli": {
+      "compiledCli": true,
+      "noNodeBunOnPath": true,
+      "version": "0.0.1+0",
+      "utf8Logs": true,
+      "unpairedStatus": true,
+      "localPairProtocol": true,
+      "cloudflareE2E": false,
+      "sha256": "dd03087878f3ad0e10f83db5169ab44f294843b8170fb2786245a6d94f47e56f",
+      "bytes": 119741440
+    }
+  },
+  "checks": {
+    "wholeRepositoryErrors": 0,
+    "existingSvelteWarnings": 1,
+    "bridgeTypeScript": true,
+    "pocTypeScript": true
+  },
+  "capabilities": {
+    "normalParentExitPersistence": true,
+    "detachedEscapesOuterJob": false,
+    "mappedExecutableSelfDeletion": false,
+    "mappedDeletionWin32": 5,
+    "hashVerifiedMemoryLoadedHelper": true,
+    "manualHttpProxy": true,
+    "websocketConnectProxy": true,
+    "localPairProtocol": true,
+    "cloudflareE2E": false
+  },
+  "gates": {
+    "gate1": "historically passed",
+    "gate2": "local passed; physical Unicode authorization regression fixed",
+    "gate3": "not passed",
+    "gate4": "not passed"
+  },
+  "limitations": [
+    "Complete install/update/uninstall CLI not implemented",
+    "Cleanup actor and update activation/rollback not implemented",
+    "Automatic writer log rotation not implemented",
+    "PAC/WPAD automatic resolution and SOCKS not implemented",
+    "File symlink creation unavailable (EPERM); branch not validated",
+    "No separate standard account, real relog/sleep, or clean environment acceptance",
+    "Organization runner access/labels unavailable; no Actions triggered",
+    "No Cloudflare deployment or remote browser/mobile E2E",
+    "Not pushed"
+  ],
+  "failureHistory": [
+    "Service stop timeout once; exact surviving identity was not retained. Creation-time filtering and diagnostics added; four extra lifecycle runs passed, causal attribution remains unproven.",
+    "Test PID JSON read before write complete; fixtures now publish via temporary-file rename.",
+    "Native Unicode stat returned another sibling file size; reproduced then fixed.",
+    "Mapped executable deletion denied as expected; PASS is a capability probe, not successful uninstall.",
+    "Bun unref-only service startup failed when parent CLI actually exited; detached option fixed, parent-exit regression passed."
+  ]
+}

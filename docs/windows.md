@@ -85,28 +85,26 @@ environment: return `process.env` (minus `BUN_BE_BUN`) and skip the probe.
 
 ### 5. The browser (Camofox)
 
-`bridge/scripts/browser.ts` builds a Camofox runtime per target from the Camoufox release zips (`ENGINES`, line ~15)
-plus `impit-<target>` (a native module).
-
-- Add `windows-x64` (Camoufox publishes `win.x86_64`; take its sha256 from the release). `impit` has
-  `impit-win32-x64-msvc`.
-- The executable inside is `camoufox.exe`; check `CAMOUFOX_INSTALL_DIR` and the launch env in
-  `bridge/src/browser.ts` (`launch()`, ~line 76).
-- `bridge/src/browser-runtime.ts` uses `${process.platform}-${process.arch}` (`win32-x64`) for the dev path; pick
-  one target name (`windows-x64`) and map it.
-- The plugin (`bridge/src/camofox-plugin.js`) and the agent's browser tools (`browser-mcp.ts`) are plain
-  JavaScript/HTTP and should need nothing.
+Done. `bridge/scripts/browser.ts` has a `windows-x64` engine (`win.x86_64`, with `impit-win32-x64-msvc`) and the
+Windows build embeds it like Linux. The bridge extracts it with Windows's own `System32\tar.exe` (a GNU tar on PATH
+reads `C:` as a remote host) and starts Camofox through `spawnManaged`, so stopping it ends Firefox's whole process
+tree through the Job. The browser makes the Windows exe about 611 MiB; the update and supervisor bounds are 1 GiB.
+Older runtimes under `browser\runtime` are pruned when the bridge starts the browser.
 
 ### 6. Build, install, release
 
-- `bridge/scripts/build.ts`: add `windows-x64` (`bun build --compile --target=bun-windows-x64`, output
-  `coderail-windows-x64.exe`). The darwin-only `codesign` step stays darwin-only; Windows wants Authenticode
-  signing (`signtool`) in the release job, or SmartScreen warns on download.
-- `install.sh` (served by `server/src/install.ts`) is POSIX sh. Add `install.ps1` (download, checksum, put the exe
-  in `%LOCALAPPDATA%\CodeRail`, add to the user PATH, run `coderail link <server>`), and a `/install.ps1` route in
-  `server/src/index.ts` next to `/install.sh`. Usage: `irm https://<server>/install.ps1 | iex`.
-- `scripts/publish.ts` (`TARGETS`, line ~27) and `.github/workflows/release.yml`: add a `windows-latest` job that
-  builds and signs, and publish the `.exe` with the others in `latest.json`.
+- `bridge/scripts/build.ts windows-x64` builds `coderail-windows-x64.exe` (Bun 1.4.4, .NET Framework's `csc` for the
+  supervisor, the browser bundled).
+- Release: the public repo's `build.yml` has a `windows` job (on `windows-2025`) next to `linux` and `mac`, and
+  `scripts/publish.ts` puts the `.exe` in the GitHub release and in `latest.json` (`bridge["windows-x64"]`, with its
+  `size`).
+- Install: `irm https://<server>/install.ps1 | iex` in a normal PowerShell (`server/src/install.ts`): downloads the
+  exe, checks its SHA-256, runs `coderail install` (into `%LOCALAPPDATA%\CodeRail`, on the user PATH) and then
+  `coderail link <server>`. On a computer where it is already installed it runs `coderail update` instead.
+- Update: `coderail update` reads `/api/version/windows-x64` on the linked server, the manifest built from
+  `latest.json`.
+- Not Authenticode signed yet (`signtool` in the `windows` job, once there is a certificate). A copy downloaded with a
+  browser gets SmartScreen's warning; `install.ps1` downloads with `Invoke-WebRequest`, which doesn't mark the file.
 - A tray app like `mac/` is optional and later; the CLI + Scheduled Task is enough to start.
 
 ## Running it while you work

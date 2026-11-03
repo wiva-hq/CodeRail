@@ -1,0 +1,21 @@
+// Copyright 2026 Wiva, Inc.
+// SPDX-License-Identifier: Apache-2.0
+// Embedded source: materialized in the user's protected runtime directory.
+const config = await Bun.file(process.argv[2]).json();
+const env = { ...process.env };
+delete env.BUN_BE_BUN;
+delete env.CODERAIL_STOP_FILE;
+try {
+  const child = Bun.spawn(config.argv, { cwd: config.cwd, env, stdin: config.input === undefined ? 'ignore' : Buffer.from(config.input, 'utf8'), stdout: 'pipe', stderr: 'pipe', windowsHide: true });
+  const consume = async stream => {
+    const decoder = new TextDecoder('utf-8'); let text = '', bytes = 0;
+    for await (const chunk of stream) {
+      bytes += chunk.length;
+      if (bytes > 4 * 1024 * 1024) throw new Error('Command output exceeds bounded capture');
+      text += decoder.decode(chunk, { stream: true });
+    }
+    return text + decoder.decode();
+  };
+  const [stdout, stderr, code] = await Promise.all([consume(child.stdout), consume(child.stderr), child.exited]);
+  await Bun.write(config.output, JSON.stringify({ code, stdout, stderr }));
+} catch (e) { await Bun.write(config.output, JSON.stringify({ error: String(e) })); }

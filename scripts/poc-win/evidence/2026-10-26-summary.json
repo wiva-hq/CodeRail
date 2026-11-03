@@ -1,0 +1,9 @@
+{
+  "total": 24,
+  "pass": 21,
+  "fail": [
+    "ffi-createpseudoconsole-io-resize",
+    "app-server-command-approval-and-running-cancel",
+    "codex-isolated-console-ctrl-c-and-recovery"
+  ]
+}

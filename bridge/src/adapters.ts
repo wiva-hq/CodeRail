@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { STATE_DIR } from './env';
+import { platform } from './platform';
 
 // The ACP adapters, as one JavaScript file each. In a built bridge they are embedded in the binary
 // (scripts/build.ts) and written out to ~/.coderail/adapters/<hash>/ on first use, since a child
@@ -27,9 +28,14 @@ export async function adapterPath(harness: string): Promise<string> {
     const dir = join(STATE_DIR, 'adapters', hash);
     const out = join(dir, `${harness}.js`);
     if (!existsSync(out)) {
-      mkdirSync(dir, { recursive: true });
-      await Bun.write(out + '.tmp', bytes);
-      await import('node:fs/promises').then((fs) => fs.rename(out + '.tmp', out));
+      if (platform.os === 'win32') {
+        platform.fs.ensurePrivateDirectory(dir);
+        platform.fs.writePrivateFile(out, new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      } else {
+        mkdirSync(dir, { recursive: true });
+        await Bun.write(out + '.tmp', bytes);
+        await import('node:fs/promises').then((fs) => fs.rename(out + '.tmp', out));
+      }
     }
     return out;
   }

@@ -7,8 +7,9 @@
 //      both naming that release's files; anything else in the bucket (older builds' files) is deleted.
 //   bun scripts/publish.ts [--no-github] [--no-r2]
 // Needs CODERAIL_BUILD; GH_TOKEN and GITHUB_REPOSITORY for GitHub; for R2, CLOUDFLARE_ACCOUNT_ID and
-// CLOUDFLARE_API_TOKEN (or a wrangler login). Expects bridge/build/coderail-{darwin,linux}-{arm64,x64} and
-// mac/build/CodeRail.zip with its Sparkle signature, mac/build/CodeRail.zip.sparkle.
+// CLOUDFLARE_API_TOKEN (or a wrangler login). Expects bridge/build/coderail-{darwin,linux}-{arm64,x64},
+// bridge/build/coderail-windows-x64.exe and mac/build/CodeRail.zip with its Sparkle signature,
+// mac/build/CodeRail.zip.sparkle.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -23,10 +24,12 @@ const id = `${version}-${build}`;
 const tag = `v${version}-build.${build}`;
 const args = process.argv.slice(2);
 
-const TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64'];
+const TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'windows-x64'];
+const bridgeName = (t: string) => `coderail-${t}${t.startsWith('windows') ? '.exe' : ''}`;
+const bridgePath = (t: string) => join(root, 'bridge/build', bridgeName(t));
 const macZip = join(root, 'mac/build/CodeRail.zip');
 const files = [
-  ...TARGETS.map((t) => ({ name: `coderail-${t}`, path: join(root, 'bridge/build', `coderail-${t}`), type: 'application/octet-stream' })),
+  ...TARGETS.map((t) => ({ name: bridgeName(t), path: bridgePath(t), type: 'application/octet-stream' })),
   { name: `CodeRail-${id}-mac.zip`, path: macZip, type: 'application/zip' },
 ];
 for (const f of files) if (!existsSync(f.path)) throw new Error(`Missing ${f.path}`);
@@ -115,7 +118,7 @@ if (!args.includes('--no-r2')) {
     build,
     published: published.toISOString(),
     mac: { url: url(`CodeRail-${id}-mac.zip`), sha256: sums[`CodeRail-${id}-mac.zip`], size: Bun.file(macZip).size },
-    bridge: Object.fromEntries(TARGETS.map((t) => [t, { url: url(`coderail-${t}`), sha256: sums[`coderail-${t}`] }])),
+    bridge: Object.fromEntries(TARGETS.map((t) => [t, { url: url(bridgeName(t)), sha256: sums[bridgeName(t)], size: Bun.file(bridgePath(t)).size }])),
     github: githubUrl,
   };
   const appcast = `<?xml version="1.0" encoding="utf-8"?>

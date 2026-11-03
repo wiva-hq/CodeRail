@@ -1,12 +1,13 @@
 // Copyright 2026 Wiva, Inc.
 // SPDX-License-Identifier: Apache-2.0
-import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { ERR } from '@coderail/protocol';
 import { RpcError, STATE_DIR, userEnv } from './env';
 import { browserRuntime } from './browser-runtime';
 import { BROWSER_MCP_SOURCE } from './browser-mcp';
+import { platform } from './platform';
 
 // Camofox runs locally behind an authenticated loopback API. Its CodeRail plugin supplies native
 // Playwright input and JPEG frames; no site is embedded or rewritten by the hub. One browser per chat session, keyed
@@ -49,7 +50,7 @@ export type McpServer = { name: string; command: string; args: string[]; env: { 
 
 
 export class Browsers {
-  private proc: ReturnType<typeof Bun.spawn> | null = null;
+  private proc: Camofox | null = null;
   private starting: Promise<void> | null = null;
   private address = '';
   private key = '';
@@ -85,21 +86,15 @@ export class Browsers {
     const port = await freePort();
     this.key = crypto.randomUUID();
     this.status('Starting Camofox on the computer…');
-    const fd = openSync(join(DIR, 'camofox.log'), 'a', 0o600);
-    let proc: ReturnType<typeof Bun.spawn>;
-    try { proc = Bun.spawn([process.execPath, join(pkg, 'server.js')], {
-      cwd: pkg,
-      env: {
-        ...env, BUN_BE_BUN: '1', CAMOUFOX_INSTALL_DIR: join(runtime, 'camoufox'), CAMOFOX_DISABLE_DEFAULT_ADDONS: '1', CAMOFOX_INTERACTIVE: 'off', CAMOFOX_PORT: String(port), CAMOFOX_BIND_HOST: '127.0.0.1', CAMOFOX_ACCESS_KEY: this.key,
-        // Live capture must show fallback fonts immediately, rather than waiting for web fonts to finish.
-        PW_TEST_SCREENSHOT_NO_FONTS_READY: '1', CAMOFOX_CRASH_REPORT_ENABLED: 'false', CAMOFOX_PROFILE_DIR: join(DIR, 'profiles'),
-        // (Camofox would close a tab after 5 min without its own automation calls, which CodeRail's plugin never makes:
-        // a browser in use, gone. The bridge closes what no one watches instead, see LEFT.)
-        SESSION_TIMEOUT_MS: '0', BROWSER_IDLE_TIMEOUT_MS: '0', TAB_INACTIVITY_MS: String(365 * 86_400_000),
-      },
-      // Camofox logs requests to stdout; browser activity must not grow an unbounded log.
-      stdout: 'ignore', stderr: fd,
-    }); } finally { closeSync(fd); }
+    const proc = await spawnCamofox([process.execPath, join(pkg, 'server.js')], pkg, {
+      ...env, BUN_BE_BUN: '1', CAMOUFOX_INSTALL_DIR: join(runtime, 'camoufox'), CAMOFOX_DISABLE_DEFAULT_ADDONS: '1', CAMOFOX_INTERACTIVE: 'off', CAMOFOX_PORT: String(port), CAMOFOX_BIND_HOST: '127.0.0.1', CAMOFOX_ACCESS_KEY: this.key,
+      // Live capture must show fallback fonts immediately, rather than waiting for web fonts to finish.
+      PW_TEST_SCREENSHOT_NO_FONTS_READY: '1', CAMOFOX_CRASH_REPORT_ENABLED: 'false', CAMOFOX_PROFILE_DIR: join(DIR, 'profiles'),
+      // (Camofox would close a tab after 5 min without its own automation calls, which CodeRail's plugin never makes:
+      // a browser in use, gone. The bridge closes what no one watches instead, see LEFT.)
+      SESSION_TIMEOUT_MS: '0', BROWSER_IDLE_TIMEOUT_MS: '0', TAB_INACTIVITY_MS: String(365 * 86_400_000),
+    }, join(DIR, 'camofox.log'));
+    if (this.stopped) { proc.stop(); return; }
     this.proc = proc;
     void proc.exited.then(() => {
       if (this.proc !== proc) return;
@@ -110,14 +105,14 @@ export class Browsers {
       }
     });
     const address = `http://127.0.0.1:${port}`;
-    for (let i = 0; i < 300 && !this.stopped && proc.exitCode === null; i++) {
+    for (let i = 0; i < 300 && !this.stopped && !proc.done; i++) {
       try {
         const r = await fetch(address + '/coderail/health', { headers: { authorization: `Bearer ${this.key}` }, signal: AbortSignal.timeout(1000) });
         if (r.ok) { this.address = address; return; }
       } catch {}
       await Bun.sleep(100);
     }
-    proc.kill();
+    proc.stop();
     throw new Error(`Camofox did not start. See ${join(DIR, 'camofox.log')} on the computer.`);
   }
 
@@ -446,7 +441,7 @@ export class Browsers {
     this.address = '';
     const proc = this.proc;
     this.proc = null;
-    proc?.kill();
+    proc?.stop();
   }
   shutdown() {
     this.stopped = true;
@@ -478,4 +473,24 @@ function checkUrl(u: unknown): string {
 function clamp(n: unknown, lo: number, hi: number, fallback: number) {
   const v = Number(n);
   return Number.isFinite(v) && v > 0 ? Math.round(Math.min(hi, Math.max(lo, v))) : fallback;
+}
+
+interface Camofox { readonly exited: Promise<unknown>; readonly done: boolean; stop(): void }
+
+/** Camofox, and the Firefox it starts. On Windows it runs in a Job: stopping it ends the whole tree, so no browser
+ *  outlives it holding the profiles. Its request log (stdout) is dropped; stderr goes to the log file. */
+async function spawnCamofox(argv: string[], cwd: string, env: Record<string, string>, logPath: string): Promise<Camofox> {
+  let done = false;
+  if (platform.process.spawnManaged) {
+    const child = await platform.process.spawnManaged(argv, { cwd, env, keepBun: true });
+    void child.stdout.pipeTo(new WritableStream()).catch(() => {});
+    void (async () => { for await (const bytes of child.stderr) appendFileSync(logPath, bytes, { mode: 0o600 }); })().catch(() => {});
+    const exited = child.exited.finally(() => { done = true; });
+    return { exited, get done() { return done; }, stop: () => child.stop() };
+  }
+  const fd = openSync(logPath, 'a', 0o600);
+  let proc: ReturnType<typeof Bun.spawn>;
+  try { proc = Bun.spawn(argv, { cwd, env, stdout: 'ignore', stderr: fd }); } finally { closeSync(fd); }
+  const exited = proc.exited.finally(() => { done = true; });
+  return { exited, get done() { return done; }, stop: () => proc.kill() };
 }

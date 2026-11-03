@@ -12,6 +12,8 @@ import { Browsers } from './browser';
 import { Watches } from './watch';
 import { planLimits } from './limits';
 import type { Config } from './config';
+import { platform } from './platform';
+import { networkInterfaces } from 'node:os';
 
 // The bridge's link to its machine's hub on the server: one WebSocket out, reconnecting forever. It
 // answers the methods the hub forwards and streams agent, terminal and browser traffic back.
@@ -37,6 +39,12 @@ export class Bridge {
   private lastPong = Date.now();
   private pinger: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
+  private epoch = 0;
+  private retry: ReturnType<typeof setTimeout> | null = null;
+  private watchdog: ReturnType<typeof setTimeout> | null = null;
+  private health: ReturnType<typeof setInterval> | null = null;
+  private lastTick = Date.now();
+  private network = '';
   private handlers: Record<string, Handler>;
 
   constructor(private config: Config) {
@@ -136,6 +144,15 @@ export class Bridge {
 
   start() {
     this.connect();
+    if (platform.os === 'win32') {
+      this.lastTick = Date.now(); this.network = this.networkFingerprint();
+      this.health = setInterval(() => {
+        const now = Date.now(), network = this.networkFingerprint();
+        const changed = network !== this.network || now - this.lastTick > 5000;
+        this.lastTick = now; this.network = network;
+        if (changed) this.reconnectAfterResume();
+      }, 1000);
+    }
     this.pinger = setInterval(() => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
       if (Date.now() - this.lastPong > 70_000) {
@@ -151,6 +168,9 @@ export class Bridge {
     this.stopped = true;
     setState('offline');
     if (this.pinger) clearInterval(this.pinger);
+    if (this.retry) clearTimeout(this.retry);
+    if (this.watchdog) clearTimeout(this.watchdog);
+    if (this.health) clearInterval(this.health);
     this.ws?.close();
     this.agents.shutdown();
     this.terms.shutdown();
@@ -163,20 +183,29 @@ export class Bridge {
     const url = this.config.server.replace(/^http/, 'ws') + '/api/bridge';
     log(`connecting to ${this.config.server}`);
     setState('connecting');
-    const ws = new WebSocket(url, { headers: { authorization: `Bearer ${this.config.token}`, 'user-agent': `coderail-bridge/${VERSION}` } } as any);
+    const ws = new WebSocket(url, { headers: { authorization: `Bearer ${this.config.token}`, 'user-agent': `coderail-bridge/${VERSION}` }, ...(platform.net.proxyFor ? { proxy: platform.net.proxyFor(url) } : {}) } as any);
+    const epoch = ++this.epoch;
     this.ws = ws;
+    if (platform.os === 'win32') this.watchdog = setTimeout(() => {
+      if (this.ws === ws && ws.readyState === WebSocket.CONNECTING) this.reconnectAfterResume();
+    }, 2000);
     ws.onopen = async () => {
+      if (this.stopped || this.ws !== ws) return;
+      if (this.watchdog) clearTimeout(this.watchdog);
       log('connected');
       setState('connected');
       this.backoff = 1000;
       this.lastPong = Date.now();
-      this.send({ t: 'hello', info: await this.info(), live: { ...this.agents.live(), terminals: this.terms.list() } });
+      const info = await this.info();
+      if (this.stopped || this.ws !== ws) return;
+      this.send({ t: 'hello', info, live: { ...this.agents.live(), terminals: this.terms.list() } });
       // (What the agents said while the link was down, after the hello, in order.)
       const held = this.held.splice(0);
       this.holding = false;
       for (const f of held) this.send(f);
     };
     ws.onmessage = (ev) => {
+      if (this.stopped || this.ws !== ws) return;
       this.lastPong = Date.now();
       let f: BridgeInFrame | { t: 'pong' };
       try {
@@ -188,6 +217,7 @@ export class Bridge {
     };
     ws.onclose = async (ev) => {
       if (this.ws !== ws) return;
+      if (this.watchdog) clearTimeout(this.watchdog);
       this.ws = null;
       this.holding = true;
       if (this.stopped) return;
@@ -197,19 +227,33 @@ export class Bridge {
         process.exit(0);
       }
       if (ev.code !== 4000) await this.checkToken();
+      if (this.stopped || epoch !== this.epoch) return;
       setState('offline');
       const wait = this.backoff;
-      this.backoff = Math.min(this.backoff * 2, 30_000);
+      this.backoff = Math.min(this.backoff * 2, platform.os === 'win32' ? 2000 : 30_000);
       log(`disconnected (${ev.code}${ev.reason ? ' ' + ev.reason : ''}); retrying in ${Math.round(wait / 1000)}s`);
-      setTimeout(() => this.connect(), wait + Math.random() * 500);
+      this.retry = setTimeout(() => { this.retry = null; this.connect(); }, wait + Math.random() * 500);
     };
     ws.onerror = () => {};
+  }
+
+  private networkFingerprint() {
+    return JSON.stringify(Object.entries(networkInterfaces()).sort(([a], [b]) => a.localeCompare(b)).map(([name, addresses]) => [name, addresses?.map(a => [a.address, a.netmask, a.mac]).sort()]));
+  }
+
+  /** The current-user supervisor calls this after network/power notifications. */
+  reconnectAfterResume() {
+    if (this.stopped) return;
+    if (this.retry) { clearTimeout(this.retry); this.retry = null; }
+    if (this.watchdog) { clearTimeout(this.watchdog); this.watchdog = null; }
+    const old = this.ws; this.ws = null;
+    old?.close(); this.holding = true; this.backoff = 1000; this.connect();
   }
 
   /** A failed upgrade does not say why; ask plainly whether the token is still good. */
   private async checkToken() {
     try {
-      const r = await fetch(this.config.server + '/api/bridge', { headers: { authorization: `Bearer ${this.config.token}` } });
+      const r = await fetch(this.config.server + '/api/bridge', { headers: { authorization: `Bearer ${this.config.token}` }, ...(platform.os === 'win32' ? { signal: AbortSignal.timeout(1500) } : {}), ...(platform.net.proxyFor ? { proxy: platform.net.proxyFor(this.config.server) } : {}) });
       if (r.status === 401) {
         log('the server refused this machine token (it was removed); run `coderail link` to link again');
         setState('removed');

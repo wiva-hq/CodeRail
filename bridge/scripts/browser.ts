@@ -17,7 +17,10 @@ const ENGINES: Record<string, { file: string; sha: string }> = {
   'darwin-x64': { file: 'mac.x86_64', sha: 'f12f90a3650478e670064a2f071c13b998fdd1125f79dc9f6cad5a9b9395b4bc' },
   'linux-arm64': { file: 'lin.arm64', sha: '60447260af8bebdb0ec3f2aa72f687b879e5598367303de2e3fdbc7a5be8c124' },
   'linux-x64': { file: 'lin.x86_64', sha: '5720d45b894ce1770543de024c6f10d514b38be560fa2dc3226b3d8586caf672' },
+  'windows-x64': { file: 'win.x86_64', sha: 'ea52a02fb1cfb1813ef6a326bea03fb2b650c9774143d953a94a27bfc8f10072' },
 };
+/** Windows's own bsdtar (zip and gzip); a GNU tar earlier on PATH (Git's) reads `C:` as a remote host. */
+export const TAR = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
 
 export async function command(cmd: string[], cwd = ROOT) {
   const p = Bun.spawn(cmd, { cwd, stdout: 'inherit', stderr: 'inherit' });
@@ -37,8 +40,9 @@ export async function prepareBrowser(target: string) {
   if (existsSync(ready) && readFileSync(ready, 'utf8') === stamp) return runtime;
   rmSync(join(parent, 'browser.tar.gz'), { force: true });
   mkdirSync(parent, { recursive: true });
-  const [os, arch] = target.split('-');
-  const native = `impit-${target}${os === 'linux' ? '-gnu' : ''}`;
+  const [name, arch] = target.split('-');
+  const os = name === 'windows' ? 'win32' : name;
+  const native = `impit-${os}-${arch}${os === 'linux' ? '-gnu' : os === 'win32' ? '-msvc' : ''}`;
   writeFileSync(join(parent, 'package.json'), JSON.stringify({
     private: true, dependencies: { '@askjo/camofox-browser': CAMOFOX, [native]: IMPIT },
     overrides: { 'playwright-core': PLAYWRIGHT, impit: IMPIT },
@@ -68,7 +72,7 @@ export async function prepareBrowser(target: string) {
   if (hash.digest('hex') !== engine.sha) { rmSync(zip); throw new Error('Camoufox download checksum does not match'); }
   const browser = join(runtime, 'camoufox');
   mkdirSync(browser);
-  await command(['unzip', '-q', '-o', zip, '-d', browser]);
+  await command(process.platform === 'win32' ? [TAR, '-xf', zip, '-C', browser] : ['unzip', '-q', '-o', zip, '-d', browser]);
   writeFileSync(join(browser, 'version.json'), JSON.stringify({ version: '152.0.4', release: 'beta.30' }));
   makeExecutable(browser);
   // No extension manager or ad-blocker download is needed for the hub browser.
@@ -95,7 +99,7 @@ export async function browserArchive(target: string, output: string) {
   const runtime = await prepareBrowser(target);
   const cached = join(dirname(runtime), 'browser.tar.gz');
   if (!existsSync(cached)) {
-    await command(['tar', '-czf', cached + '.tmp', '-C', runtime, '.']);
+    await command([TAR, '-czf', cached + '.tmp', '-C', runtime, '.']);
     renameSync(cached + '.tmp', cached);
   }
   cpSync(cached, output);

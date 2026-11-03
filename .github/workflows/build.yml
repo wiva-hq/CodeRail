@@ -4,6 +4,8 @@
 #   linux    checks, and the Linux bridges
 #   mac      the macOS bridges and CodeRail.app with one inside; signs them with the Developer ID, notarizes
 #            them, and signs the update for Sparkle
+#   windows  the Windows bridge, with its supervisor (csc from .NET Framework) and browser; not Authenticode
+#            signed yet, so SmartScreen may warn about a downloaded copy
 #   publish  a GitHub release here (the files everyone downloads), and dl.coderail.codes's latest.json and the Mac
 #            app's update feed, pointing at it
 # The server image is docker.yml. The secrets are on the `release` environment, which only build tags can use:
@@ -120,8 +122,29 @@ jobs:
             bridge/build/coderail-darwin-*
           retention-days: 3
 
+  windows:
+    if: github.repository == 'wiva-hq/CodeRail'
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Build number
+        run: echo "CODERAIL_BUILD=${GITHUB_REF_NAME##*-build.}" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: cd bridge && bun scripts/build.ts windows-x64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: bridge/build/coderail-windows-x64.exe
+          retention-days: 3
+
   publish:
-    needs: [linux, mac]
+    needs: [linux, mac, windows]
     runs-on: ubuntu-24.04
     environment: release
     steps:
@@ -143,6 +166,10 @@ jobs:
         with:
           name: mac
           path: .
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows
+          path: bridge/build
 
       - name: Publish (GitHub release and dl.coderail.codes)
         env:

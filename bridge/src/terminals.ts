@@ -5,6 +5,9 @@ import { existsSync } from 'node:fs';
 import { HOME, RpcError, b64, userEnv } from './env';
 import { detect, forget } from './agents';
 import { checkPath } from './scope';
+import { platform } from './platform';
+import type { spawnStream } from './platform/win32/stream';
+type ManagedProcess = Awaited<ReturnType<typeof spawnStream>>;
 
 // Terminals on the machine: real PTYs that keep running with no client attached. Each keeps its last
 // 256 KiB of output so a client that attaches (or comes back) sees the screen it left.
@@ -20,7 +23,7 @@ interface Term {
   info: TerminalInfo;
   /** A sign-in terminal's output so far, as text, for its link and code. */
   loginText?: string;
-  proc: ReturnType<typeof Bun.spawn>;
+  proc: ReturnType<typeof Bun.spawn> | ManagedProcess;
   chunks: Uint8Array[];
   size: number;
   out: Uint8Array[];
@@ -47,14 +50,15 @@ export class Terminals {
     const cwd = p.cwd ? await checkPath(p.cwd, caller) : HOME;
     if (!existsSync(cwd)) throw new RpcError(ERR.notFound, 'That folder does not exist');
     const env = await userEnv();
-    const shell = env.SHELL || '/bin/zsh';
-    const cmd = p.command?.length ? p.command : [shell, '-l'];
+    const defaultCommand = platform.shell.defaultCommand(env);
+    const shell = defaultCommand[0];
+    const cmd = p.command?.length ? p.command : defaultCommand;
     const cols = clamp(p.cols ?? 100, 10, 1000);
     const rows = clamp(p.rows ?? 30, 4, 300);
     const id = `t${Date.now().toString(36)}${(this.next++).toString(36)}`;
     const info: TerminalInfo = {
       id,
-      title: p.title ?? (p.command?.length ? p.command.map((c) => c.split('/').pop()).join(' ') : shell.split('/').pop()!),
+      title: p.title ?? (p.command?.length ? p.command.map((c) => platform.path.basename(c)).join(' ') : platform.path.basename(shell)),
       cwd,
       cols,
       rows,
@@ -64,7 +68,11 @@ export class Terminals {
       ...(p.login ? { login: { harness: p.login, url: null, code: null } } : {}),
     };
     const t: Term = { info, proc: null as any, chunks: [], size: 0, out: [], timer: null, sent: 0, quiet: false, seen: Date.now() };
-    t.proc = Bun.spawn(cmd, {
+    t.proc = platform.process.spawnManaged ? await platform.process.spawnManaged(cmd, {
+      cwd,
+      env: { ...env, TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'CodeRail' },
+      terminal: { cols, rows, data: bytes => this.output(t, bytes) },
+    }) : platform.process.spawn(cmd, {
       cwd,
       env: { ...env, TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'CodeRail' },
       terminal: {
@@ -74,6 +82,7 @@ export class Terminals {
       },
     });
     t.proc.exited.then((code) => {
+      if (this.terms.get(id) !== t) return;
       this.flush(t);
       t.info.exited = code ?? 0;
       this.emit('term:' + id, { type: 'exit', code: t.info.exited });
@@ -106,7 +115,7 @@ export class Terminals {
     const h = await detect(p.harness, true);
     if (!h.installed || !h.path) throw new RpcError(ERR.notFound, `${h.name} is not installed on this machine`);
     const command = p.harness === 'codex' ? [h.path, 'logout'] : [h.path, 'auth', 'logout'];
-    const proc = Bun.spawn(command, { cwd: HOME, env: await userEnv(), stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' });
+    const proc = Bun.spawn(command, { cwd: HOME, env: await userEnv(), stdin: 'ignore', stdout: 'ignore', stderr: 'ignore', windowsHide: true });
     const code = await Promise.race([proc.exited, Bun.sleep(30_000).then(() => (proc.kill(), -1))]);
     await this.signedIn(p.harness);
     if (code !== 0) throw new RpcError(ERR.internal, `${h.name} could not sign out`);
@@ -157,7 +166,7 @@ export class Terminals {
     const t = this.get(p.id);
     if (t.info.exited !== null) throw new RpcError(ERR.invalid, 'That terminal has ended');
     if (typeof p.data !== 'string' || p.data.length > 1024 * 1024) throw new RpcError(ERR.invalid, 'Bad input');
-    t.proc.terminal!.write(p.data);
+    if ('write' in t.proc) t.proc.write(p.data); else t.proc.terminal!.write(p.data);
     return { ok: true };
   }
 
@@ -165,20 +174,28 @@ export class Terminals {
     const t = this.get(p.id);
     t.info.cols = clamp(p.cols, 10, 1000);
     t.info.rows = clamp(p.rows, 4, 300);
-    if (t.info.exited === null) t.proc.terminal!.resize(t.info.cols, t.info.rows);
+    if (t.info.exited === null) {
+      if ('resize' in t.proc) t.proc.resize(t.info.cols, t.info.rows); else t.proc.terminal!.resize(t.info.cols, t.info.rows);
+    }
     return { ok: true };
   }
 
   close(p: { id: string }) {
     const t = this.get(p.id);
-    if (t.info.exited === null) t.proc.kill('SIGHUP');
+    if (t.timer) clearTimeout(t.timer);
+    t.timer = null; t.out = [];
+    if (t.info.exited === null) this.stop(t);
     this.terms.delete(p.id);
     this.emit('machine', { type: 'terminal_closed', id: p.id });
     return { ok: true };
   }
 
   shutdown() {
-    for (const t of this.terms.values()) if (t.info.exited === null) t.proc.kill('SIGHUP');
+    for (const t of this.terms.values()) if (t.info.exited === null) this.stop(t);
+  }
+
+  private stop(t: Term) {
+    if ('stop' in t.proc) t.proc.stop(); else platform.process.stopLegacy(t.proc, 'terminal');
   }
 
   private get(id: string): Term {

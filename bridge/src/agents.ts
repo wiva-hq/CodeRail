@@ -6,6 +6,8 @@ import { adapterPath } from './adapters';
 import type { McpServer } from './browser';
 import { RpcError, VERSION, log, run, userEnv } from './env';
 import { checkPath } from './scope';
+import { platform } from './platform';
+import type { spawnStream } from './platform/win32/stream';
 
 // Agents over ACP: one adapter process per harness, shared by all its sessions. The adapter runs the
 // machine's own `claude` / `codex` with the machine's own login and config; CodeRail only relays.
@@ -19,6 +21,8 @@ interface Pending {
 
 class AdapterProcess {
   private proc: ReturnType<typeof Bun.spawn> | null = null;
+  private managed: Awaited<ReturnType<typeof spawnStream>> | null = null;
+  private expectedExit = false;
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private ready: Promise<any> | null = null;
@@ -47,28 +51,31 @@ class AdapterProcess {
       if (this.harness === 'codex') childEnv.CODEX_PATH = h.path;
       const script = await adapterPath(this.harness);
       log(`starting ${this.harness} adapter`);
-      this.proc = Bun.spawn([process.execPath, script], {
+      this.expectedExit = false;
+      if (platform.process.spawnManaged) this.managed = await platform.process.spawnManaged([process.execPath, script], { env: childEnv, cwd: env.HOME, keepBun: true });
+      else this.proc = platform.process.spawn([process.execPath, script], {
         stdin: 'pipe',
         stdout: 'pipe',
         stderr: 'pipe',
         env: childEnv,
         cwd: env.HOME,
       });
-      const proc = this.proc;
-      this.readLines(this.proc.stdout as ReadableStream<Uint8Array>, (line) => this.onLine(line));
-      this.readLines(this.proc.stderr as ReadableStream<Uint8Array>, (line) => {
+      const child = this.managed ?? this.proc!;
+      this.readLines(child.stdout as ReadableStream<Uint8Array>, (line) => this.onLine(line));
+      this.readLines(child.stderr as ReadableStream<Uint8Array>, (line) => {
         if (process.env.CODERAIL_DEBUG) log(`[${this.harness}] ${line}`);
       });
-      this.proc.exited.then((code) => {
+      child.exited.then((code) => {
         log(`${this.harness} adapter exited (${code})`);
         // (One that failed to start and was replaced: the new one is not its to clear.)
-        if (this.proc !== proc) return;
+        if ((this.managed ?? this.proc) !== child) return;
         this.proc = null;
+        this.managed = null;
         this.ready = null;
         this.loaded.clear();
         for (const p of this.pending.values()) p.reject(new RpcError(ERR.internal, `${this.harness} stopped`));
         this.pending.clear();
-        this.onExit();
+        if (!this.expectedExit) this.onExit();
       });
       const init = await withTimeout(30_000, `${this.harness} did not start`, this.request('initialize', {
         protocolVersion: 1,
@@ -88,17 +95,23 @@ class AdapterProcess {
       await this.ready;
     } catch (e) {
       this.ready = null;
-      this.proc?.kill();
+      this.stop();
       throw e;
     }
   }
 
   get running() {
-    return !!this.proc;
+    return !!(this.proc ?? this.managed);
   }
 
   stop() {
-    this.proc?.kill();
+    if (this.managed) { this.expectedExit = true; this.managed.stop(); }
+    if (this.proc) platform.process.stopLegacy(this.proc, 'agent');
+  }
+
+  async stopAndWait() {
+    const exited = (this.managed ?? this.proc)?.exited;
+    this.stop(); if (exited) await exited;
   }
 
   private async readLines(stream: ReadableStream<Uint8Array>, onLine: (l: string) => void) {
@@ -118,6 +131,7 @@ class AdapterProcess {
   }
 
   private write(msg: any) {
+    if (this.managed) { this.managed.write(JSON.stringify(msg) + '\n'); return; }
     const stdin = this.proc?.stdin as import('bun').FileSink | undefined;
     if (!stdin) throw new RpcError(ERR.internal, `${this.harness} is not running`);
     stdin.write(JSON.stringify(msg) + '\n');
@@ -181,6 +195,9 @@ export class Agents {
   private approvals = new Map<string, PendingApproval>();
   private busy = new Map<string, number>(); // sessionId -> prompts in flight
   private sessionHarness = new Map<string, string>();
+  private recoveries = new Map<string, Promise<void>>();
+  private cancelling = new Set<string>();
+  private stopping = false;
   private nextApproval = 1;
 
   /** browser: the chat's browser as an MCP server for each session (Browsers.mcpServer, bindKey). */
@@ -218,35 +235,42 @@ export class Agents {
     }
   }
 
-  private proc(harness: string): AdapterProcess {
+  private processKey(harness: string, sessionId?: string) {
+    return platform.os === 'win32' ? `${harness}:${sessionId ?? '_discovery'}` : harness;
+  }
+
+  private proc(harness: string, sessionId?: string): AdapterProcess {
     if (!HARNESSES.some((h) => h.id === harness)) throw new RpcError(ERR.invalid, `Unknown harness ${harness}`);
-    let p = this.procs.get(harness);
+    const key = this.processKey(harness, sessionId);
+    let p = this.procs.get(key);
     if (!p) {
       p = new AdapterProcess(
         harness,
         (method, params) => this.fromAgent(harness, method, params),
         (method, params) => this.agentNotice(harness, method, params),
-        () => this.adapterExited(harness),
+        () => this.adapterExited(harness, p!),
       );
-      this.procs.set(harness, p);
+      this.procs.set(key, p);
     }
     return p;
   }
 
-  private async started(harness: string): Promise<AdapterProcess> {
-    const p = this.proc(harness);
+  private async started(harness: string, sessionId?: string): Promise<AdapterProcess> {
+    if (this.stopping) throw new RpcError(ERR.internal, 'Bridge is shutting down');
+    const p = this.proc(harness, sessionId);
     await p.start();
     return p;
   }
 
-  private adapterExited(harness: string) {
+  private adapterExited(harness: string, proc: AdapterProcess) {
     for (const [id, a] of this.approvals) {
       if (a.approval.harness !== harness) continue;
+      if (platform.os === 'win32' && this.procs.get(this.processKey(harness, a.approval.sessionId)) !== proc) continue;
       this.approvals.delete(id);
       this.emit('session:' + a.approval.sessionId, { kind: 'answer', data: { approvalId: id, optionId: null, by: null } });
     }
     // (A turn that was running reports the stop itself: its prompt's request fails.)
-    this.endTasks((t) => t.harness === harness, `${harness} stopped`);
+    this.endTasks((t) => t.harness === harness && (platform.os !== 'win32' || this.procs.get(this.processKey(harness, t.sessionId)) === proc), `${harness} stopped`);
   }
 
   /** Requests the agent makes of us: permission asks. */
@@ -305,14 +329,23 @@ export class Agents {
   async newSession(p: { harness: string; cwd: string }, caller: Caller) {
     const cwd = await checkPath(p.cwd, caller);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new RpcError(ERR.notFound, 'That folder does not exist');
-    const proc = await this.started(p.harness);
+    // (On Windows each session has its adapter: it starts under a key of its own until the session's id is known.)
+    const initial = `new:${crypto.randomUUID()}`;
+    const proc = await this.started(p.harness, initial);
     // (A new session's id comes with the answer: its browser key is bound to it then.)
     const b = this.browser?.mcpServer();
-    const r = await proc.request('session/new', { cwd, mcpServers: b ? [b.server] : [] }).catch((e) => {
+    let r: any;
+    try { r = await proc.request('session/new', { cwd, mcpServers: b ? [b.server] : [] }); }
+    catch (error) {
       if (b) this.browser!.release(b.key);
-      throw e;
-    });
+      if (platform.os === 'win32') { await proc.stopAndWait(); this.procs.delete(this.processKey(p.harness, initial)); }
+      throw error;
+    }
     if (b) this.browser!.bindKey(b.key, r.sessionId);
+    if (platform.os === 'win32') {
+      this.procs.delete(this.processKey(p.harness, initial));
+      this.procs.set(this.processKey(p.harness, r.sessionId), proc);
+    }
     proc.loaded.add(r.sessionId);
     this.sessionHarness.set(r.sessionId, p.harness);
     return { sessionId: r.sessionId, harness: p.harness, cwd, title: null, modes: r.modes, models: r.models, configOptions: r.configOptions };
@@ -321,7 +354,6 @@ export class Agents {
   /** Bring back a session from the harness's own history. `known`: CodeRail already has its log. */
   async open(p: { harness: string; sessionId: string; cwd: string; known?: boolean }, caller: Caller, after: (send: () => void) => void) {
     const cwd = await checkPath(p.cwd, caller);
-    const proc = await this.started(p.harness);
     if (!p.known && caller.folders) {
       // A session CodeRail has never seen: the folder the harness has it in must be the caller's, not just the
       // folder they named (session ids can be global to a harness).
@@ -330,6 +362,8 @@ export class Agents {
         throw new RpcError(ERR.forbidden, 'That session is outside your folders');
       }
     }
+    await this.recoveries.get(this.processKey(p.harness, p.sessionId));
+    const proc = await this.started(p.harness, p.sessionId);
     let replay: any[] = [];
     let r: any = {};
     if (p.known) {
@@ -385,7 +419,8 @@ export class Agents {
   }
 
   private async session(p: { harness: string; sessionId: string; cwd: string }): Promise<AdapterProcess> {
-    const proc = await this.started(p.harness);
+    await this.recoveries.get(this.processKey(p.harness, p.sessionId));
+    const proc = await this.started(p.harness, p.sessionId);
     await this.attach(proc, p.sessionId, p.cwd);
     this.sessionHarness.set(p.sessionId, p.harness);
     return proc;
@@ -398,7 +433,9 @@ export class Agents {
     this.busy.set(p.sessionId, (this.busy.get(p.sessionId) ?? 0) + 1);
     proc.request('session/prompt', { sessionId: p.sessionId, prompt: p.prompt }).then(
       (r) => this.emit(topic, { kind: 'turn', data: { stopReason: r?.stopReason ?? 'end_turn', usage: r?.usage ?? null } }),
-      (e) => this.emit(topic, { kind: 'error', data: { message: e.message ?? String(e) } }),
+      (e) => this.cancelling.has(p.sessionId)
+        ? this.emit(topic, { kind: 'turn', data: { stopReason: 'cancelled', usage: null } })
+        : this.emit(topic, { kind: 'error', data: { message: e.message ?? String(e) } }),
     ).finally(() => {
       const n = (this.busy.get(p.sessionId) ?? 1) - 1;
       if (n > 0) this.busy.set(p.sessionId, n);
@@ -430,17 +467,32 @@ export class Agents {
   }
 
   async cancel(p: { harness: string; sessionId: string; cwd: string }) {
-    const proc = this.procs.get(p.harness);
+    const key = this.processKey(p.harness, p.sessionId);
+    if (this.recoveries.has(key)) { await this.recoveries.get(key); return { ok: true }; }
+    const proc = this.procs.get(key);
     for (const [id, a] of this.approvals) {
       if (a.approval.sessionId === p.sessionId) this.settle(id, null, null);
     }
     if (proc?.running && proc.loaded.has(p.sessionId)) proc.notify('session/cancel', { sessionId: p.sessionId });
+    if (platform.os === 'win32' && proc?.running) {
+      this.cancelling.add(p.sessionId);
+      const recovery = (async () => {
+        await Bun.sleep(500);
+        // Every session owns its runtime Job. Closing it cannot affect another session.
+        await proc.stopAndWait();
+        if (this.stopping) return;
+        await proc.start(); await this.attach(proc, p.sessionId, p.cwd);
+      })();
+      this.recoveries.set(key, recovery);
+      try { await recovery; }
+      finally { this.recoveries.delete(key); this.cancelling.delete(p.sessionId); }
+    }
     return { ok: true };
   }
 
   /** Stops one background task, leaving the turn that started it running. */
   async stopTask(p: { harness: string; sessionId: string; taskId: string }) {
-    const proc = this.procs.get(p.harness);
+    const proc = this.procs.get(this.processKey(p.harness, p.sessionId));
     if (!proc?.running || !proc.loaded.has(p.sessionId)) throw new RpcError(ERR.notFound, 'That task is gone');
     await proc.request('_session/async_task/stop', { sessionId: p.sessionId, asyncTaskId: p.taskId });
     return { ok: true };
@@ -483,9 +535,13 @@ export class Agents {
   }
 
   async close(p: { harness: string; sessionId: string }) {
-    const proc = this.procs.get(p.harness);
+    const key = this.processKey(p.harness, p.sessionId);
+    await this.recoveries.get(key);
+    const proc = this.procs.get(key);
     for (const [id, a] of this.approvals) if (a.approval.sessionId === p.sessionId) this.settle(id, null, null);
-    if (proc?.running && proc.loaded.has(p.sessionId)) {
+    if (platform.os === 'win32' && proc) {
+      await proc.stopAndWait(); this.procs.delete(key);
+    } else if (proc?.running && proc.loaded.has(p.sessionId)) {
       if (proc.caps?.sessionCapabilities?.close) await proc.request('session/close', { sessionId: p.sessionId }).catch(() => {});
       proc.loaded.delete(p.sessionId);
     }
@@ -496,6 +552,7 @@ export class Agents {
   }
 
   shutdown() {
+    this.stopping = true;
     for (const p of this.procs.values()) p.stop();
   }
 }
@@ -509,7 +566,7 @@ export async function detect(id: string, fresh = false): Promise<HarnessInfo> {
   if (cached && (!fresh || Date.now() - cached.at < 30_000)) return cached.info;
   const h = HARNESSES.find((x) => x.id === id)!;
   const env = await userEnv();
-  const path = Bun.which(h.command, { PATH: env.PATH }) ?? null;
+  const path = platform.shell.findExecutable(h.command, env);
   let version: string | null = null;
   if (path) {
     const r = await run([path, '--version'], { timeout: 10_000 }).catch(() => null);

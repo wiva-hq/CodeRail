@@ -1,0 +1,52 @@
+{
+  "dateUtc": "2026-10-27T14:25:12Z",
+  "branch": "codex/windows-bridge-phase2-4",
+  "runtime": "Bun 1.4.4",
+  "host": "Windows 11 x64 current non-elevated account",
+  "suite": {
+    "passed": 85,
+    "failed": 0,
+    "assertions": 500,
+    "files": 44,
+    "seconds": 104.37,
+    "log": "scripts/poc-win/artifacts/latest-regression.log"
+  },
+  "checks": {
+    "repositoryErrors": 0,
+    "existingSvelteWarnings": 1,
+    "bridgeTsc": true,
+    "pocTsc": true
+  },
+  "compiledArtifact": {
+    "bytes": 119814144,
+    "sha256": "ed57335e79e98296767785f10a623d6813b6d33afba5e923f5b43da44c68b253"
+  },
+  "compiledLifecycle": {
+    "inactiveUninstall": true,
+    "pairedBackgroundUninstall": true,
+    "noNodeBunOnPath": true,
+    "realStartupRemoved": true,
+    "realPathRestored": true,
+    "installedImageRemoved": true,
+    "ownedServiceProcessesRemaining": 0,
+    "cloudflareE2E": false,
+    "realRelog": false,
+    "cleanRoom": false
+  },
+  "afterSuite": {
+    "stoppedUpdateFileSwitch": {
+      "passed": 1,
+      "assertions": 16,
+      "actualNewExecutableRun": true,
+      "unhealthyRollbackOldBytesAndMarker": true,
+      "productionUpdateImplemented": false
+    }
+  },
+  "gate2Local": true,
+  "gate3": false,
+  "gate4": false,
+  "goal": "active",
+  "automation": "paused",
+  "pushed": false,
+  "deployed": false
+}

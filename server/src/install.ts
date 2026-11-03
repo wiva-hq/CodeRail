@@ -8,6 +8,7 @@ import type { Latest } from './downloads';
  */
 export function installScript(origin: string, latest: Latest): string {
   const cases = Object.entries(latest.bridge)
+    .filter(([target]) => !target.startsWith('windows'))
     .map(([target, f]) => `  ${target}) url='${f.url}'; sum='${f.sha256}' ;;`)
     .join('\n');
   return `#!/bin/sh
@@ -23,7 +24,7 @@ case "$arch" in
 esac
 case "$os-$arch" in
 ${cases}
-  *) echo "CodeRail: no bridge build for $os-$arch (macOS and Linux for now)" >&2; exit 1 ;;
+  *) echo "CodeRail: no bridge build for $os-$arch (macOS and Linux; on Windows use install.ps1)" >&2; exit 1 ;;
 esac
 
 dir="$HOME/.coderail/bin"
@@ -58,5 +59,50 @@ if [ -f "$HOME/.coderail/config.json" ]; then
 else
   "$dir/coderail" link "${origin}" </dev/tty
 fi
+`;
+}
+
+/**
+ * What an installed Windows bridge's `coderail update` reads (/api/version/windows-x64; bridge/src/platform/win32/
+ * update-manifest.ts checks it), or null when the newest build has no Windows bridge.
+ */
+export function windowsManifest(latest: Latest) {
+  const f = latest.bridge['windows-x64'];
+  if (!f?.size) return null;
+  return { schema: 1, target: 'windows-x64', helperProtocol: 1, version: `${latest.version}+${latest.build}`, sha256: f.sha256, size: f.size, url: f.url };
+}
+
+/**
+ * The script behind `irm https://<host>/install.ps1 | iex`, for Windows PowerShell 5.1 and later in a normal (not
+ * administrator) window: downloads the newest Windows bridge, checks it, installs it for the current user and links
+ * this computer; an installed one is updated instead.
+ */
+export function installPowerShell(origin: string, latest: Latest): string | null {
+  const f = latest.bridge['windows-x64'];
+  if (!f) return null;
+  return `# CodeRail bridge installer for ${origin} (bridge ${latest.version} build ${latest.build})
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+$arch = $env:PROCESSOR_ARCHITEW6432; if (-not $arch) { $arch = $env:PROCESSOR_ARCHITECTURE }
+if ($arch -ne 'AMD64') { throw "CodeRail: no Windows bridge build for $arch (x64 for now)" }
+$state = Join-Path $env:LOCALAPPDATA 'CodeRail'
+$exe = Join-Path $state 'bin\\current\\coderail.exe'
+if ((Test-Path $exe) -and (Test-Path (Join-Path $state 'installation.json'))) {
+  Write-Host 'CodeRail is installed here; updating it.'
+  & $exe update
+  return
+}
+$tmp = Join-Path $env:TEMP ('coderail-' + [guid]::NewGuid().ToString('N') + '.exe')
+try {
+  Write-Host 'Downloading the CodeRail bridge ${latest.version} build ${latest.build} for windows-x64 (about 600 MB)...'
+  Invoke-WebRequest -UseBasicParsing -Uri '${f.url}' -OutFile $tmp
+  if ((Get-FileHash -Algorithm SHA256 $tmp).Hash.ToLower() -ne '${f.sha256}') { throw "CodeRail: the download doesn't match its checksum; try again" }
+  & $tmp install
+  if ($LASTEXITCODE) { throw "CodeRail: installing failed ($LASTEXITCODE)" }
+} finally {
+  Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+}
+& $exe link '${origin}'
 `;
 }

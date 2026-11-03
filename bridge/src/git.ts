@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RpcError, userEnv } from './env';
 import { checkPath, checkWrite } from './scope';
+import { platform } from './platform';
 
 const DIFF_MAX = 800 * 1024;
 const NET = 110_000; // (under the hub's 120 s)
@@ -23,7 +24,7 @@ const NET = 110_000; // (under the hub's 120 s)
  * could have had an agent write.)
  */
 const SAFE = [
-  '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.sshCommand=ssh', '-c', 'diff.external=', '-c', 'core.pager=cat',
+  '-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${platform.git.nullFile}`, '-c', 'core.sshCommand=ssh', '-c', 'diff.external=', '-c', 'core.pager=cat',
   '-c', 'protocol.ext.allow=never', '-c', 'core.editor=true', '-c', 'sequence.editor=true', '-c', 'commit.gpgSign=false', '-c', 'tag.gpgSign=false',
   '-c', 'submodule.recurse=false',
 ];
@@ -43,20 +44,27 @@ function refName(v: unknown, what = 'branch'): string {
 type Opts = { timeout?: number; ok?: number[]; input?: string; env?: Record<string, string> };
 
 async function env(extra?: Record<string, string>) {
-  return {
+  return platform.git.environment({
     ...(await userEnv()),
     GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1', LC_ALL: 'C',
     // (Nothing waits on someone at the computer: no editor, no credential dialog.)
     GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no', GCM_INTERACTIVE: 'never', SSH_ASKPASS_REQUIRE: 'never',
     ...extra,
-  };
+  });
+}
+
+let exe: Promise<string> | undefined;
+/** The git command line: the machine's git (Git for Windows found where it's installed), the caller's limits. */
+async function argv(args: string[], caller: Caller) {
+  exe ??= platform.git.executable ? platform.git.executable() : Promise.resolve('git');
+  return [await exe, ...(caller.folders ? SAFE : []), ...(platform.git.arguments ? platform.git.arguments(args, false) : args)];
 }
 
 async function git(args: string[], cwd: string, caller: Caller, opts: Opts = {}) {
-  const argv = ['git', ...(caller.folders ? SAFE : []), ...args];
+  const cmd = await argv(args, caller);
   for (let tries = 0; ; tries++) {
-    const p = Bun.spawn(argv, {
-      cwd, env: await env(opts.env), stdout: 'pipe', stderr: 'pipe',
+    const p = Bun.spawn(cmd, {
+      cwd, env: await env(opts.env), stdout: 'pipe', stderr: 'pipe', windowsHide: true,
       stdin: opts.input !== undefined ? new TextEncoder().encode(opts.input) : 'ignore',
     });
     const timer = setTimeout(() => p.kill(), opts.timeout ?? 30_000);
@@ -72,7 +80,7 @@ async function git(args: string[], cwd: string, caller: Caller, opts: Opts = {})
 
 /** git's bytes as they are (a picture at a revision). */
 async function gitBytes(args: string[], cwd: string, caller: Caller): Promise<Uint8Array | null> {
-  const p = Bun.spawn(['git', ...(caller.folders ? SAFE : []), ...args], { cwd, env: await env(), stdout: 'pipe', stderr: 'ignore', stdin: 'ignore' });
+  const p = Bun.spawn(await argv(args, caller), { cwd, env: await env(), stdout: 'pipe', stderr: 'ignore', stdin: 'ignore', windowsHide: true });
   const timer = setTimeout(() => p.kill(), 30_000);
   const out = new Uint8Array(await new Response(p.stdout).arrayBuffer());
   clearTimeout(timer);
@@ -327,7 +335,7 @@ const DIFF_FLAGS = ['--no-ext-diff', '--no-textconv', '--find-renames'];
 async function headDiff(root: string, path: string, orig: string | undefined, caller: Caller, opts: { untracked?: boolean; ws?: boolean } = {}) {
   await checkPath(join(root, path), caller);
   if (opts.untracked) {
-    const d = await git(['diff', '--no-index', '--no-ext-diff', '--no-textconv', '--', '/dev/null', path], root, caller, { ok: [1] });
+    const d = await git(['diff', '--no-index', '--no-ext-diff', '--no-textconv', '--', platform.git.nullFile, path], root, caller, { ok: [1] });
     return d.stdout;
   }
   const head = (await git(['rev-parse', '-q', '--verify', 'HEAD'], root, caller, { ok: [1] })).code === 0 ? 'HEAD' : await emptyTree(root, caller);
@@ -360,7 +368,7 @@ export async function diff(p: { cwd: string; path?: string; orig?: string; stage
     for (const f of untracked.slice(0, 50)) {
       if (out.length > DIFF_MAX) break;
       if (!await checkPath(join(r, f.path), caller).then(() => true, () => false)) continue; // (never CodeRail's own folder)
-      const d = await git(['diff', '--no-index', '--no-ext-diff', '--', '/dev/null', f.path], r, caller, { ok: [1] }).catch(() => null);
+      const d = await git(['diff', '--no-index', '--no-ext-diff', '--', platform.git.nullFile, f.path], r, caller, { ok: [1] }).catch(() => null);
       if (d) out += d.stdout;
     }
   }

@@ -6,6 +6,7 @@
 import { type Caller, ERR, type GhCheck, type GhPull, type GhRepo } from '@coderail/protocol';
 import { RpcError, userEnv } from './env';
 import { needRoot, push, remoteInfo, remotes, runGit, status } from './git';
+import { platform } from './platform';
 
 const GH_SET = {
   GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', GH_NO_EXTENSION_UPDATE_NOTIFIER: '1', GH_SPINNER_DISABLED: '1',
@@ -15,12 +16,13 @@ const GH_SET = {
 };
 const GH_DROP = ['GH_REPO', 'GH_FORCE_TTY', 'CLICOLOR_FORCE', 'GH_DEBUG', 'DEBUG'];
 // (For a caller limited to some folders, the git gh runs itself gets the same safe settings as git.ts's.)
-const SAFE_KV = [['core.fsmonitor', 'false'], ['core.hooksPath', '/dev/null'], ['core.sshCommand', 'ssh'], ['diff.external', ''], ['core.pager', 'cat'], ['protocol.ext.allow', 'never'], ['submodule.recurse', 'false']];
+const SAFE_KV = [['core.fsmonitor', 'false'], ['core.hooksPath', platform.git.nullFile], ['core.sshCommand', 'ssh'], ['diff.external', ''], ['core.pager', 'cat'], ['protocol.ext.allow', 'never'], ['submodule.recurse', 'false']];
 
 let ghPath: string | null | undefined;
 async function gh(): Promise<string | null> {
   if (ghPath !== undefined) return ghPath;
-  const PATH = (await userEnv()).PATH;
+  const env = await userEnv();
+  const PATH = env.PATH ?? env.Path;
   ghPath = Bun.which('gh', { PATH }) ?? ['/opt/homebrew/bin/gh', '/usr/local/bin/gh', '/opt/local/bin/gh', '/home/linuxbrew/.linuxbrew/bin/gh', '/snap/bin/gh'].find((p) => Bun.which(p)) ?? null;
   return ghPath;
 }
@@ -54,7 +56,7 @@ async function run(args: string[], root: string, caller: Caller, opts: { input?:
     env.GIT_ALLOW_PROTOCOL = 'https:http:ssh';
   }
   const p = Bun.spawn([bin, ...args], {
-    cwd: root, env, stdout: 'pipe', stderr: 'pipe',
+    cwd: root, env, stdout: 'pipe', stderr: 'pipe', windowsHide: true,
     stdin: opts.input !== undefined ? new TextEncoder().encode(opts.input) : 'ignore',
   });
   const timer = setTimeout(() => p.kill(), opts.timeout ?? 30_000);

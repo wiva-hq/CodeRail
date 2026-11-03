@@ -9,8 +9,8 @@ export interface Latest {
   build: string;
   published: string;
   mac: { url: string; sha256: string; size: number };
-  /** By target, like darwin-arm64. */
-  bridge: Record<string, { url: string; sha256: string }>;
+  /** By target, like darwin-arm64; size from the builds that publish windows-x64 on. */
+  bridge: Record<string, { url: string; sha256: string; size?: number }>;
   github: string;
 }
 

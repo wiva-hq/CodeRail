@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-26T23:28:49.9547318-05:00",
+  "suite": "codex",
+  "bun": "1.4.4",
+  "pass": 12,
+  "fail": 0,
+  "skip": 0,
+  "exitCode": 0,
+  "pocTypecheck": 0,
+  "rootCheckErrors": 0,
+  "rootCheckExistingWarnings": 1,
+  "platformPass": 9,
+  "platformFail": 0,
+  "postRunMatchingProcesses": []
+}

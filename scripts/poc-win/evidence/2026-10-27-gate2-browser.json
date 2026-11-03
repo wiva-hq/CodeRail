@@ -1,0 +1,35 @@
+{
+  "time": "2026-10-27T00:04:11.0299725-05:00",
+  "transport": "localhost candidate RPC + existing Bridge Proxy",
+  "frontend": "unchanged FilesCard/ChangesCard/BrowserCard + real MachineConn",
+  "commit": "20eecff 网页验收 中文提交😀",
+  "metrics": {
+    "http": 5,
+    "websockets": 1,
+    "hmrUpdates": 1,
+    "rpc": [
+      "sub",
+      "machine.info",
+      "agent.sessions",
+      "agent.approvals",
+      "term.list",
+      "fs.list",
+      "fs.read",
+      "fs.write",
+      "fs.read",
+      "git.status",
+      "git.diff",
+      "git.stage",
+      "git.status",
+      "git.diff",
+      "git.commit",
+      "git.status",
+      "git.diff",
+      "proxy.ports"
+    ]
+  },
+  "windowsRoot": "E:\\Citrus Cafe\\Wiva\\CodeRail\\scripts\\poc-win\\artifacts\\web-gate2-5fIt5N\\项目 中文 空格",
+  "hmrDom": "HMR 已更新 中文😀",
+  "diff": "1 insertion, 1 deletion; first line unchanged",
+  "commitControl": "Ctrl+Enter"
+}

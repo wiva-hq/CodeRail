@@ -1,0 +1,11 @@
+{
+  "name": "production-agents-isolated-cancel-recover",
+  "status": "PASS",
+  "approved": 1,
+  "cleanupMs": 780.7524000000012,
+  "commandCount": 4,
+  "remaining": 0,
+  "historyRestored": true,
+  "spectatorHealthy": true,
+  "fixturePidsUsedFor": "assertions only"
+}

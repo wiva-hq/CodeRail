@@ -105,6 +105,12 @@ The image is [`ghcr.io/wiva-hq/coderail`](https://github.com/wiva-hq/CodeRail/pk
 curl -fsSL https://your-site/install.sh | sh
 ```
 
+On Windows (x64), in PowerShell, not as administrator:
+
+```powershell
+irm https://your-site/install.ps1 | iex
+```
+
 Every build is also on [Releases](https://github.com/wiva-hq/CodeRail/releases), with its checksums.
 Everything else (roles, the browser, phones, troubleshooting) is in the **[documentation](https://docs.coderail.codes)**.
 

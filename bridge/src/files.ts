@@ -3,21 +3,39 @@
 import { type Caller, type DirEntry, ERR, type FileContent } from '@coderail/protocol';
 import { access, appendFile, lstat, mkdir, open, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, extname, join } from 'node:path';
+import { basename, dirname, extname, join, parse } from 'node:path';
 import { Zip, ZipDeflate, ZipPassThrough } from 'fflate';
 import { HOME, RpcError, STATE_DIR } from './env';
+import { platform } from './platform';
 import { callerFolders, checkPath, checkWrite } from './scope';
+import type { ScopedWindowsFs } from './platform/win32/fs';
 
 const MAX_ENTRIES = 5000;
 const READ_MAX = 700 * 1024;
 /** fs.chunk's most bytes per answer (base64 in one JSON frame). */
 const CHUNK_MAX = 1024 * 1024;
+const wire = (path:string) => platform.os==='win32'?path.replaceAll('\\','/'):path;
+async function scoped<T>(path:string,caller:Caller,work:(fs:ScopedWindowsFs)=>Promise<T>,volume=false):Promise<T>{
+  const roots=await callerFolders(caller);
+  const within=platform.fs.containsCanonical??platform.path.contains;
+  const root=volume?parse(path).root:roots?.find(root=>within(root,path))??(!roots?parse(path).root:null);
+  if(!root||!platform.fs.openScope)throw new RpcError(ERR.forbidden,'No authorized filesystem root');
+  let fs:ScopedWindowsFs|undefined;
+  try{fs=await platform.fs.openScope(root,[STATE_DIR]);return await work(fs);}
+  catch(e:any){if(e instanceof RpcError)throw e;throw new RpcError(['EACCES','EPERM'].includes(e.code)?ERR.forbidden:e.code==='ENOENT'?ERR.notFound:['EINVAL','EEXIST','ENOTDIR','EISDIR'].includes(e.code)?ERR.invalid:ERR.internal,e.message);}
+  finally{fs?.close();}
+}
+const scopedEntry=async(fs:ScopedWindowsFs,path:string):Promise<DirEntry>=>({name:basename(path),path:wire(path),...await fs.stat(path)});
 
 /** Whether something is there, off the main thread (a protected folder can hold the call; see guarded). */
 const exists = (p: string) => access(p).then(() => true, () => false);
 
 export async function home(caller: Caller) {
-  return { home: HOME, roots: await callerFolders(caller) ?? [HOME] };
+  const folders = await callerFolders(caller);
+  if (folders) return { home: wire(HOME), roots: folders };
+  // (Windows has no single /: someone with the whole computer starts at home and can go to each drive.)
+  const drives = platform.os === 'win32' ? (await Promise.all([...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].map(async (l) => (await exists(`${l}:/`)) ? `${l}:/` : null))).filter((d): d is string => !!d) : [];
+  return { home: wire(HOME), roots: [wire(HOME), ...drives] };
 }
 
 async function entry(path: string): Promise<DirEntry> {
@@ -40,6 +58,15 @@ async function entry(path: string): Promise<DirEntry> {
 
 export async function list(p: { path: string; hidden?: boolean }, caller: Caller) {
   const path = await checkPath(p.path, caller);
+  if(platform.fs.openScope)return scoped(path,caller,async fs=>{
+    const all=(await fs.list(path)).filter(e=>p.hidden||!e.name.startsWith('.'));
+    const entries:DirEntry[]=all.slice(0,MAX_ENTRIES).map(e=>({name:e.name,path:wire(join(path,e.name)),kind:e.isSymbolicLink()?'link':e.isDirectory()?'dir':'file',size:Number(e.size),mtime:Number(e.mtimeNs/1000000n)}));
+    entries.sort((a,b)=>(a.kind==='dir')!==(b.kind==='dir')?(a.kind==='dir'?-1:1):a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:'base'}));
+    let parent:string|null=dirname(path);
+    if(wire(parent)===wire(path))parent=null;
+    else try{parent=await checkPath(parent,caller);}catch(e){if(e instanceof RpcError&&e.code===ERR.forbidden)parent=null;else throw e;}
+    return{path:wire(path),parent:parent?wire(parent):null,entries,truncated:all.length>MAX_ENTRIES};
+  });
   let names: string[];
   try {
     names = await readdir(path);
@@ -64,6 +91,12 @@ export async function list(p: { path: string; hidden?: boolean }, caller: Caller
 
 export async function read(p: { path: string; max?: number }, caller: Caller): Promise<FileContent> {
   const path = await checkPath(p.path, caller);
+  if(platform.fs.openScope)return scoped(path,caller,async fs=>{
+    const s=await fs.stat(path);if(s.kind==='dir')throw new RpcError(ERR.invalid,'That is a folder');
+    const max=Math.min(Math.max(Number(p.max)||READ_MAX,1),READ_MAX),bytes=await fs.read(path,max),mime=mimeOf(path);
+    const text=!mime.startsWith('image/')&&!mime.startsWith('audio/')&&!mime.startsWith('video/')&&mime!=='application/pdf'&&isText(bytes);
+    return{path:wire(path),size:s.size,mtime:s.mtime,mime:text&&mime==='application/octet-stream'?'text/plain':mime,encoding:text?'utf8':'base64',content:text?new TextDecoder('utf-8').decode(bytes):Buffer.from(bytes).toString('base64'),truncated:s.size>max};
+  });
   const f = Bun.file(path);
   let s;
   try {
@@ -127,6 +160,13 @@ export async function chunk(p: { path?: string; zip?: string; offset?: number; l
 export async function write(p: { path: string; content: string; encoding?: 'utf8' | 'base64'; append?: boolean }, caller: Caller) {
   const path = await checkWrite(p.path, caller);
   if (typeof p.content !== 'string') throw new RpcError(ERR.invalid, 'No content');
+  if(platform.fs.openScope)return scoped(path,caller,async fs=>{
+    const data=p.encoding==='base64'?Buffer.from(p.content,'base64'):p.content;
+    // (Later parts of an upload append to the file the first part wrote through the scope.)
+    if(p.append)await appendFile(await fs.authorize(path),data);
+    else await fs.write(path,data);
+    return scopedEntry(fs,path);
+  });
   if (!await exists(dirname(path))) throw new RpcError(ERR.notFound, 'The folder does not exist');
   const data = p.encoding === 'base64' ? Buffer.from(p.content, 'base64') : p.content;
   if (p.append) await appendFile(path, data);
@@ -265,6 +305,7 @@ async function sweepZips() {
 
 export async function makeDir(p: { path: string }, caller: Caller) {
   const path = await checkWrite(p.path, caller);
+  if(platform.fs.openScope)return scoped(path,caller,async fs=>{await fs.mkdir(path);return scopedEntry(fs,path);});
   await mkdir(path, { recursive: true });
   return entry(path);
 }
@@ -272,6 +313,7 @@ export async function makeDir(p: { path: string }, caller: Caller) {
 export async function renamePath(p: { from: string; to: string }, caller: Caller) {
   const from = await checkWrite(p.from, caller);
   const to = await checkWrite(p.to, caller);
+  if(platform.fs.openScope)return scoped(from,caller,async fs=>{await fs.move(from,to);return scopedEntry(fs,to);},true);
   if (await exists(to)) throw new RpcError(ERR.invalid, 'Something already has that name');
   await rename(from, to);
   return entry(to);
@@ -280,16 +322,9 @@ export async function renamePath(p: { from: string; to: string }, caller: Caller
 /** Into the system's trash, never deleted outright. */
 export async function trash(p: { path: string }, caller: Caller) {
   const path = await checkPath(p.path, caller);
+  if(platform.fs.openScope)return scoped(path,caller,async fs=>{const{recycle}=await import('./platform/win32/recycle');await fs.recycle(path,recycle);return{ok:true,trashed:wire(path)};});
   if (!await exists(path)) throw new RpcError(ERR.notFound, 'No such file');
-  const dir = process.platform === 'darwin' ? join(HOME, '.Trash') : join(HOME, '.local/share/Trash/files');
-  await mkdir(dir, { recursive: true });
-  let target = join(dir, basename(path));
-  for (let i = 2; await exists(target); i++) {
-    const ext = extname(path);
-    target = join(dir, `${basename(path, ext)} ${i}${ext}`);
-  }
-  await rename(path, target);
-  return { ok: true, trashed: target };
+  return { ok: true, trashed: await platform.fs.trash(path) };
 }
 
 function isText(bytes: Uint8Array): boolean {

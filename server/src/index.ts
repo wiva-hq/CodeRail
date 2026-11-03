@@ -21,7 +21,7 @@ import {
 } from './auth';
 import { pushEnabled } from './push';
 import { type Env, HttpError, body, hashPassword, json, limit, now, pairCode, randomId, randomToken, sha256, timingSafeEqual } from './util';
-import { installScript } from './install';
+import { installPowerShell, installScript, windowsManifest } from './install';
 import { latest } from './downloads';
 import { type Hub, Upgrade } from './hub';
 import { fileRoute, zipRoute, zipStart } from './files';
@@ -30,11 +30,16 @@ import { fileRoute, zipRoute, zipStart } from './files';
 export async function site(req: Request, env: Env, hub: Hub, url: URL): Promise<Response | Upgrade | null> {
   try {
     if (url.pathname.startsWith('/api/')) return await api(req, env, hub, url);
-    if (url.pathname === '/install.sh' || url.pathname === '/download/CodeRail.zip' || url.pathname === '/download/latest.json') {
+    if (url.pathname === '/install.sh' || url.pathname === '/install.ps1' || url.pathname === '/download/CodeRail.zip' || url.pathname === '/download/latest.json') {
       const l = await latest();
       if (!l) return new Response('No build has been published yet', { status: 503 });
       if (url.pathname === '/download/latest.json') return json(l);
       if (url.pathname === '/download/CodeRail.zip') return Response.redirect(l.mac.url, 302);
+      if (url.pathname === '/install.ps1') {
+        const script = installPowerShell(url.origin, l);
+        if (!script) return new Response('The newest build has no Windows bridge', { status: 503 });
+        return new Response(script, { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache' } });
+      }
       return new Response(installScript(url.origin, l), { headers: { 'content-type': 'text/x-shellscript; charset=utf-8', 'cache-control': 'no-cache' } });
     }
     return null;
@@ -81,6 +86,12 @@ async function api(req: Request, env: Env, hub: Hub, url: URL): Promise<Response
   if (m !== 'GET' && m !== 'HEAD') checkOrigin(req, url);
 
   // -- no sign-in needed
+  if (path === '/version/windows-x64' && m === 'GET') {
+    const l = await latest();
+    const manifest = l && windowsManifest(l);
+    if (!manifest) throw new HttpError(404, 'No Windows bridge has been published yet');
+    return json(manifest);
+  }
   if (path === '/me' && m === 'GET') {
     const user = await currentUser(env, req);
     const any = await env.DB.prepare('SELECT 1 FROM users LIMIT 1').first();
@@ -409,8 +420,8 @@ async function machineApi(req: Request, env: Env, hub: Hub, url: URL, user: User
     if (b.folders != null && !Array.isArray(b.folders)) throw new HttpError(400, 'Folders are a list');
     const named: string[] = (b.folders ?? []).map((f: unknown) => String(f).trim()).filter(Boolean);
     // (A folder limit that can't be read is refused, never widened to everywhere.)
-    if (named.some((f) => !f.startsWith('/'))) throw new HttpError(400, 'Folders are absolute paths, starting with /');
-    const folders = list(named.map((f) => f.replace(/\/+$/, '') || '/'));
+    if (named.some((f) => !f.startsWith('/') && !/^[A-Za-z]:\//.test(f))) throw new HttpError(400, 'Folders are absolute paths, starting with / (or a drive, C:/)');
+    const folders = list(named.map((f) => f.replace(/([^:])\/+$/, '$1') || '/'));
     await env.DB.prepare(
       `INSERT INTO grants (machine_id, user_id, role, folders, harnesses, terminal) VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(machine_id, user_id) DO UPDATE SET role = excluded.role, folders = excluded.folders, harnesses = excluded.harnesses, terminal = excluded.terminal`,

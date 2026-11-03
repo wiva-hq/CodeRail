@@ -517,9 +517,11 @@ export function atLeast(role: Role, need: Role): boolean {
 /** Is `path` (absolute, normalized) inside one of `folders`? null folders = everywhere. */
 export function inFolders(path: string, folders: string[] | null): boolean {
   if (!folders) return true;
+  // (Windows paths, C:/Users/me, aren't case-sensitive.)
+  const fold = (s: string) => /^[A-Za-z]:\//.test(s) ? s.toLowerCase() : s;
   return folders.some((f) => {
-    const base = f.endsWith('/') ? f.slice(0, -1) : f;
-    return path === base || path.startsWith(base + '/');
+    const base = fold(f.endsWith('/') ? f.slice(0, -1) : f), p = fold(path);
+    return p === base || p.startsWith(base + '/');
   });
 }
 

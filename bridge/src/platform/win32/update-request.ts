@@ -34,7 +34,9 @@ export async function requestUpdate(input:string,artifact:UpdateArtifact) {
     const request={schema:1,helperProtocol:1,installationId:installed.id,nonce,version:artifact.version,sha256:artifact.sha256,size:artifact.size,callerPid:process.pid,callerCreated:String(caller.created)};
     slot.write(Buffer.from(JSON.stringify(request),'utf8'));slot.close();slot=undefined;
     const read=(name:string)=>{const file=directory.child(name,false);try{return file.read(root,16384).toString('utf8');}finally{file.close();}};
-    const deadline=performance.now()+15000;
+    // Before acknowledging, the supervisor hashes the staged and previous images (~640 MB each, cold on disk after a
+    // long download); a dead supervisor still fails fast through the alive() check below.
+    const deadline=performance.now()+120000;
     while(performance.now()<deadline){
       try{throw error('EIO',read('update-error-'+nonce+'.txt'));}catch(cause:any){if(cause.code!=='ENOENT')throw cause;}
       try{

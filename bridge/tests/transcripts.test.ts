@@ -1,3 +1,5 @@
+// Copyright 2026 Wiva, Inc.
+// SPDX-License-Identifier: Apache-2.0
 import { afterAll, describe, expect, test } from 'bun:test';
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

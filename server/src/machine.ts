@@ -68,6 +68,8 @@ export class Machine {
   /** The server's own calls to the bridge (a download), by id: answered in memory, never through a client. */
   private direct = new Map<string, { resolve: (v: any) => void; reject: (e: any) => void; timer: ReturnType<typeof setTimeout> }>();
   private alarmTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Prompts sent to each session that have not ended yet (one sent mid-turn waits its turn): it is idle at none. */
+  private prompts = new Map<string, number>();
 
   constructor(readonly id: string, private env: Env, private path: string) {
     this.sql = new Sql(new Database(path, { create: true }));
@@ -307,6 +309,7 @@ export class Machine {
           if (text) this.patchSession(s.sessionId, { title: text.length > 60 ? text.slice(0, 59).trimEnd() + '…' : text });
         }
         this.publish('session:' + s.sessionId, entry, (c) => this.maySee(c, s));
+        this.prompts.set(s.sessionId, (this.prompts.get(s.sessionId) ?? 0) + 1);
         this.setState(params.sessionId, 'running');
       }
       if (AUDITED.has(frame.method)) this.audit(caller, frame.method, auditDetail(frame.method, params));
@@ -454,7 +457,7 @@ export class Machine {
     // Reconcile: what the bridge has now wins.
     const busy = new Set(live.sessions.filter((s) => s.busy).map((s) => s.sessionId));
     for (const r of this.sql.exec("SELECT id FROM sessions WHERE state = 'running'").toArray()) {
-      if (!busy.has(r.id as string)) this.setState(r.id as string, 'idle');
+      if (!busy.has(r.id as string)) { this.prompts.delete(r.id as string); this.setState(r.id as string, 'idle'); }
     }
     const liveIds = new Set(live.approvals.map((a) => a.id));
     for (const a of this.approvals()) {
@@ -522,7 +525,7 @@ export class Machine {
   private afterFailure(method: string, params: string, client: string) {
     const field = (k: string) => params.match(new RegExp(`"${k}":"([^"]+)"`))?.[1];
     // (A prompt the harness never started: its session isn't working.)
-    if (method === 'agent.prompt') { const sid = field('sessionId'); if (sid) this.setState(sid, 'idle'); }
+    if (method === 'agent.prompt') { const sid = field('sessionId'); if (sid) this.promptEnded(sid); }
     // (An attach that failed: its frames or output aren't for this client.)
     const topic = method === 'browser.attach' ? 'browser:' + field('sessionId') : method === 'term.attach' ? 'term:' + field('id') : null;
     const ws = topic && !topic.endsWith(':undefined') ? this.sockets(client)[0] : null;
@@ -651,9 +654,16 @@ export class Machine {
         break;
       case 'turn':
       case 'error':
-        this.setState(s.sessionId, 'idle');
+        this.promptEnded(s.sessionId);
         break;
     }
+  }
+
+  private promptEnded(id: string) {
+    const n = (this.prompts.get(id) ?? 1) - 1;
+    if (n > 0) { this.prompts.set(id, n); return; }
+    this.prompts.delete(id);
+    this.setState(id, 'idle');
   }
 
   // ---- Sessions and the log ------------------------------------------------------------------------------

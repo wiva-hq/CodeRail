@@ -216,11 +216,17 @@ const FOLLOW_EVERY = 2_000;
 const FOLLOW_GIVE_UP = 30_000;
 const FOLLOW_LIVE = 15_000;
 const FOLLOWS_PATH = join(STATE_DIR, 'follows.json');
+/** Harnesses whose adapter queues a prompt sent mid-turn itself (claude-agent-acp's turnQueue). */
+const QUEUES_ITSELF = new Set(['claude-code']);
 
 export class Agents {
   private procs = new Map<string, AdapterProcess>();
   private approvals = new Map<string, PendingApproval>();
   private busy = new Map<string, number>(); // sessionId -> prompts in flight
+  /** The last prompt's turn, by session: the next prompt waits for it (harnesses not in QUEUES_ITSELF). */
+  private turns = new Map<string, Promise<void>>();
+  /** Stops asked for, by session: a held-back prompt from before a Stop is dropped. */
+  private stops = new Map<string, number>();
   private sessionHarness = new Map<string, string>();
   private recoveries = new Map<string, Promise<void>>();
   private cancelling = new Set<string>();
@@ -701,19 +707,33 @@ export class Agents {
     if (!Array.isArray(p.prompt) || !p.prompt.length) throw new RpcError(ERR.invalid, 'Nothing to send');
     await this.follow(p.harness, p.sessionId, p.cwd);
     await this.catchUpFirst(p);
-    const proc = await this.session(p);
+    let proc = await this.session(p);
     const topic = 'session:' + p.sessionId;
     this.busy.set(p.sessionId, (this.busy.get(p.sessionId) ?? 0) + 1);
-    proc.request('session/prompt', { sessionId: p.sessionId, prompt: p.prompt }).then(
+    // (codex-acp ends the running turn when another prompt comes: the bridge holds that prompt until the turn is
+    // done. A Stop drops the prompts held back, as Claude Code's own queue does.)
+    const before = QUEUES_ITSELF.has(p.harness) ? undefined : this.turns.get(p.sessionId);
+    const stops = this.stops.get(p.sessionId) ?? 0;
+    const turn = (async () => {
+      if (before) {
+        await before;
+        if ((this.stops.get(p.sessionId) ?? 0) !== stops) return { stopReason: 'cancelled' };
+        proc = await this.session(p);
+      }
+      return proc.request('session/prompt', { sessionId: p.sessionId, prompt: p.prompt });
+    })();
+    const done = turn.then(
       (r) => this.emit(topic, { kind: 'turn', data: { stopReason: r?.stopReason ?? 'end_turn', usage: r?.usage ?? null } }),
       (e) => this.cancelling.has(p.sessionId)
         ? this.emit(topic, { kind: 'turn', data: { stopReason: 'cancelled', usage: null } })
         : this.emit(topic, { kind: 'error', data: { message: e.message ?? String(e) } }),
     ).finally(() => {
+      if (this.turns.get(p.sessionId) === done) this.turns.delete(p.sessionId);
       const n = (this.busy.get(p.sessionId) ?? 1) - 1;
       if (n > 0) this.busy.set(p.sessionId, n);
       else { this.busy.delete(p.sessionId); this.wrote(p.sessionId); }
     });
+    if (!QUEUES_ITSELF.has(p.harness)) this.turns.set(p.sessionId, done);
     return { ok: true };
   }
 
@@ -746,6 +766,7 @@ export class Agents {
 
   async cancel(p: { harness: string; sessionId: string; cwd: string }) {
     const key = this.processKey(p.harness, p.sessionId);
+    this.stops.set(p.sessionId, (this.stops.get(p.sessionId) ?? 0) + 1);
     if (this.recoveries.has(key)) { await this.recoveries.get(key); return { ok: true }; }
     const proc = this.procs.get(key);
     for (const [id, a] of this.approvals) {
@@ -814,6 +835,8 @@ export class Agents {
 
   async close(p: { harness: string; sessionId: string }) {
     const key = this.processKey(p.harness, p.sessionId);
+    // (Prompts held back for it are dropped, not sent to an adapter started for it again.)
+    this.stops.set(p.sessionId, (this.stops.get(p.sessionId) ?? 0) + 1);
     await this.recoveries.get(key);
     const proc = this.procs.get(key);
     for (const [id, a] of this.approvals) if (a.approval.sessionId === p.sessionId) this.settle(id, null, null);

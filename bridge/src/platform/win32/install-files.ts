@@ -11,7 +11,7 @@ import { NativeFile } from './native';
 export interface Installation {
   schema: 1; id: string; root: string; version: string; executable: string; sha256: string;
 }
-const allowed = new Set(['bin','runtime','adapters','updates','browser','config.json','state.json','access.json','bridge.log','bridge.log.1','supervisor.cs','cleanup.cs','update.cs','owned-log.cs','startup.cs','update.json','supervisor.exe','supervisor.lock','supervisor.txt','supervisor-error.txt','installation.json','ownership.txt']);
+const allowed = new Set(['bin','runtime','adapters','updates','browser','config.json','state.json','access.json','follows.json','bridge.log','bridge.log.1','supervisor.cs','cleanup.cs','update.cs','owned-log.cs','startup.cs','update.json','supervisor.exe','supervisor.lock','supervisor.txt','supervisor-error.txt','installation.json','ownership.txt']);
 export function readInstallation(root: string): Installation | null {
   if (!existsSync(root)) return null;
   const parent = new NativeFile(realpathSync.native(root), true);

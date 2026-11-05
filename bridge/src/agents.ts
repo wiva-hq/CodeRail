@@ -1,13 +1,15 @@
 // Copyright 2026 Wiva, Inc.
 // SPDX-License-Identifier: Apache-2.0
 import { type Approval, type Caller, ERR, HARNESSES, type HarnessAuth, type HarnessInfo, type LocalSession } from '@coderail/protocol';
-import { existsSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { adapterPath } from './adapters';
 import type { McpServer } from './browser';
-import { RpcError, VERSION, log, run, userEnv } from './env';
+import { HOME, RpcError, STATE_DIR, VERSION, log, run, userEnv } from './env';
 import { checkPath } from './scope';
 import { platform } from './platform';
 import type { spawnStream } from './platform/win32/stream';
+import { appended, forkTail, forksOf, hungOff, mirrored, sizeOf, tipOf, transcriptPath, uuidsOf } from './transcripts';
 
 // Agents over ACP: one adapter process per harness, shared by all its sessions. The adapter runs the
 // machine's own `claude` / `codex` with the machine's own login and config; CodeRail only relays.
@@ -190,6 +192,31 @@ interface PendingApproval {
   resolve: (outcome: any) => void;
 }
 
+/** A Claude Code session the bridge has loaded, followed in its transcript: another client may go on with it. */
+interface Follow {
+  harness: string;
+  cwd: string;
+  file: string | null;
+  /** Up to where the transcript is in CodeRail's log (the bridge's own turns, or what it caught up on). */
+  shown: number;
+  /** The size at the last look, and since when it has stayed so: a turn being written is left until it's done. */
+  size: number;
+  quietSince: number;
+  /** The adapter's session is behind the transcript: it is loaded afresh before the next prompt. */
+  stale: boolean;
+  running: Promise<void> | null;
+  /** Forks another client made (see transcripts.ts): those changed after this, and the size each was taken at. */
+  since: number;
+  forks: Map<string, number>;
+}
+
+/** How often followed transcripts are looked at; how long a turn that did not end may stay quiet before it is taken
+ *  as done (an interrupted one); and how recent a write must be for a turn to count as going on elsewhere. */
+const FOLLOW_EVERY = 2_000;
+const FOLLOW_GIVE_UP = 30_000;
+const FOLLOW_LIVE = 15_000;
+const FOLLOWS_PATH = join(STATE_DIR, 'follows.json');
+
 export class Agents {
   private procs = new Map<string, AdapterProcess>();
   private approvals = new Map<string, PendingApproval>();
@@ -199,9 +226,17 @@ export class Agents {
   private cancelling = new Set<string>();
   private stopping = false;
   private nextApproval = 1;
+  private follows = new Map<string, Follow>();
+  private followTimer: ReturnType<typeof setInterval> | null = null;
+  /** Sessions the bridge is writing to outside a prompt (a retitle): not another client's writes. */
+  private writing = new Set<string>();
+  private claudeDir: string | null = null;
+  private followsChanged = false;
 
   /** browser: the chat's browser as an MCP server for each session (Browsers.mcpServer, bindKey). */
-  constructor(private emit: Emit, private browser?: { mcpServer(sessionId?: string): { server: McpServer; key: string }; bindKey(key: string, sessionId: string): void; release(key: string): void }) {}
+  constructor(private emit: Emit, private browser?: { mcpServer(sessionId?: string): { server: McpServer; key: string }; bindKey(key: string, sessionId: string): void; release(key: string): void }) {
+    this.restoreFollows();
+  }
 
   /** The MCP servers a session gets: its chat's browser. */
   private mcp(sessionId: string): McpServer[] {
@@ -303,6 +338,224 @@ export class Agents {
     }
   }
 
+  // ---- Another client on the same session ----------------------------------------------------------------
+  // A Claude Code session lives in its transcript, which the Claude app or a terminal can resume too. The bridge
+  // follows the transcripts of the sessions it has loaded: what another client appends goes to CodeRail's log once
+  // its turn is done, and the adapter, whose session would answer from where it last was, loads it afresh before
+  // the next prompt. Only one client should run a turn at a time: a prompt while another is mid-turn is refused.
+
+  /** Starts following a session, from where its transcript is now. */
+  private async follow(harness: string, sessionId: string, cwd: string) {
+    if (harness !== 'claude-code' || this.follows.has(sessionId)) return;
+    if (!this.claudeDir) this.claudeDir = (await userEnv()).CLAUDE_CONFIG_DIR || join(HOME, '.claude');
+    if (this.follows.has(sessionId)) return;
+    const file = transcriptPath(this.claudeDir, cwd, sessionId);
+    const size = file ? Math.max(sizeOf(file), 0) : 0;
+    // (A fork newer than the session's own last write has turns it lacks, made while CodeRail was not following.)
+    let since = 0;
+    try { if (file) since = statSync(file).mtimeMs; } catch {}
+    this.follows.set(sessionId, { harness, cwd, file, shown: size, size, quietSince: Date.now(), stale: false, running: null, since, forks: new Map() });
+    this.followsChanged = true;
+    this.followTimer ??= setInterval(() => this.lookAtFollowed(), FOLLOW_EVERY);
+  }
+
+  /** The followed sessions, kept across restarts: CodeRail shows a session's history without the bridge, so after a
+   *  restart the bridge would otherwise hear of a session only at its next prompt. */
+  private restoreFollows() {
+    let saved: Record<string, { harness: string; cwd: string; file: string | null; shown: number; since: number }>;
+    try { saved = JSON.parse(readFileSync(FOLLOWS_PATH, 'utf8')); } catch { return; }
+    for (const [sessionId, s] of Object.entries(saved ?? {})) {
+      if (s?.harness !== 'claude-code' || typeof s.cwd !== 'string' || typeof s.shown !== 'number') continue;
+      if (s.file && sizeOf(s.file) < 0) continue; // (Its transcript is gone.)
+      this.follows.set(sessionId, { harness: s.harness, cwd: s.cwd, file: s.file ?? null, shown: s.shown, size: s.shown, quietSince: Date.now(), stale: false, running: null, since: s.since ?? 0, forks: new Map() });
+    }
+    if (!this.follows.size) return;
+    log(`following ${this.follows.size} session(s) from before`);
+    void userEnv().then((env) => { this.claudeDir ??= env.CLAUDE_CONFIG_DIR || join(HOME, '.claude'); }, () => {});
+    this.followTimer ??= setInterval(() => this.lookAtFollowed(), FOLLOW_EVERY);
+  }
+
+  private saveFollows() {
+    this.followsChanged = false;
+    const out: Record<string, { harness: string; cwd: string; file: string | null; shown: number; since: number }> = {};
+    for (const [sessionId, f] of this.follows) out[sessionId] = { harness: f.harness, cwd: f.cwd, file: f.file, shown: f.shown, since: f.since };
+    try {
+      platform.fs.ensurePrivateDirectory(STATE_DIR);
+      platform.fs.writePrivateFile(FOLLOWS_PATH, JSON.stringify(out) + '\n');
+    } catch (e: any) {
+      log(`saving the followed sessions: ${e?.message ?? e}`);
+    }
+  }
+
+  /** What the bridge itself wrote is in CodeRail's log already. */
+  private wrote(sessionId: string) {
+    const f = this.follows.get(sessionId);
+    if (!f) return;
+    if (!f.file && this.claudeDir) f.file = transcriptPath(this.claudeDir, f.cwd, sessionId);
+    if (!f.file) return;
+    f.shown = f.size = Math.max(sizeOf(f.file), 0);
+    f.quietSince = Date.now();
+    this.followsChanged = true;
+    try { this.giveToFork(sessionId, f); } catch (e: any) { log(`giving ${sessionId} to its fork: ${e?.message ?? e}`); }
+  }
+
+  /** The other way: the fork another client goes on in (the Claude app keeps to its fork once it made one) gets the
+   *  session's conversation, CodeRail's turns and all, so that client has them when it loads the session again.
+   *  The newest fork only, never while it is mid-turn. */
+  private giveToFork(sessionId: string, f: Follow) {
+    if (!f.file) return;
+    let fork: string | null = null;
+    let newest = 0;
+    for (const c of forksOf(f.file, sessionId, f.since)) {
+      if (this.follows.has(basename(c, '.jsonl'))) continue;
+      let mtime = 0;
+      try { mtime = statSync(c).mtimeMs; } catch { continue; }
+      if (mtime > newest) { newest = mtime; fork = c; }
+    }
+    if (!fork) return;
+    const forkId = basename(fork, '.jsonl');
+    const size = sizeOf(fork);
+    // (Turns of its own the session hasn't taken yet: those first, or they'd be left off the conversation.)
+    if (forkTail(fork, uuidsOf(f.file), sessionId).lines.length) return;
+    const text = mirrored(fork, f.file, forkId);
+    if (text === null) return;
+    if (Date.now() - newest < FOLLOW_LIVE && !appended(fork, 0).turnDone) {
+      log(`${sessionId}: not given to ${forkId}: another client is mid-turn in it`);
+      return;
+    }
+    // (Rewritten whole: once the two went on from different messages, appending can't make the fork's conversation
+    // the session's. Only if the other client wrote nothing meanwhile.)
+    if (sizeOf(fork) !== size) return;
+    const tmp = fork + '.coderail-tmp';
+    writeFileSync(tmp, text);
+    try { renameSync(tmp, fork); } catch { writeFileSync(fork, text); rmSync(tmp, { force: true }); }
+    // (Nothing in it now that the session lacks: no need to look at it again for that.)
+    f.forks.set(fork, sizeOf(fork));
+    log(`${sessionId}: the conversation given to ${forkId}, the fork another client goes on in`);
+  }
+
+  /** Puts the turns another client made in a fork of the session (the Claude app's resume) in the session's
+   *  transcript, once each such turn is done. Whether a fork is mid-turn, written to in the last `liveMs`. */
+  private takeForks(sessionId: string, f: Follow, liveMs = FOLLOW_GIVE_UP): boolean {
+    if (!f.file) return false;
+    let live = false;
+    let took = false;
+    let have: Set<string> | null = null;
+    for (const fork of forksOf(f.file, sessionId, f.since)) {
+      const forkId = basename(fork, '.jsonl');
+      if (this.follows.has(forkId)) continue; // (Open in CodeRail as a session of its own.)
+      const size = sizeOf(fork);
+      if (f.forks.get(fork) === size) continue;
+      have ??= uuidsOf(f.file);
+      const t = forkTail(fork, have, sessionId);
+      if (!t.lines.length) { f.forks.set(fork, size); continue; }
+      let mtime = 0;
+      try { mtime = statSync(fork).mtimeMs; } catch {}
+      if (!t.turnDone && Date.now() - mtime < liveMs) { live = true; continue; }
+      f.forks.set(fork, size);
+      // (A fork from an earlier point, the other client not having loaded CodeRail's turns: what it said goes after
+      // them, so that the conversation has both.)
+      const tip = tipOf(f.file);
+      if (t.parent !== tip) log(`${sessionId}: ${forkId} went on from an earlier message than CodeRail's last: its turns go after CodeRail's`);
+      appendFileSync(f.file, [...hungOff(t, tip), ...(t.lastPrompt ? [t.lastPrompt] : [])].join('\n') + '\n');
+      for (const u of t.uuids) have.add(u);
+      log(`${sessionId}: ${t.lines.length} transcript lines from ${forkId}, a fork another client made`);
+      took = true;
+    }
+    // (And back: the fork's conversation made the session's, CodeRail's turns before its own included.)
+    if (took) try { this.giveToFork(sessionId, f); } catch (e: any) { log(`giving ${sessionId} to its fork: ${e?.message ?? e}`); }
+    return live;
+  }
+
+  private lookAtFollowed() {
+    for (const [sessionId, f] of this.follows) {
+      if (!f.file || f.running || this.busy.has(sessionId) || this.writing.has(sessionId)) continue;
+      if (this.recoveries.has(this.processKey(f.harness, sessionId))) continue;
+      try { this.takeForks(sessionId, f); } catch (e: any) { log(`forks of ${sessionId}: ${e?.message ?? e}`); }
+      const size = sizeOf(f.file);
+      if (size === f.shown) continue;
+      if (size !== f.size) { f.size = size; f.quietSince = Date.now(); continue; }
+      if (!appended(f.file, f.shown).turnDone && Date.now() - f.quietSince < FOLLOW_GIVE_UP) continue;
+      f.running = this.catchUp(sessionId, f)
+        .catch((e) => log(`catching up on ${sessionId}: ${e?.message ?? e}`))
+        .finally(() => { f.running = null; });
+    }
+    if (this.followsChanged) this.saveFollows();
+  }
+
+  /** Puts what another client appended to the transcript in CodeRail's log: the adapter replays the session from
+   *  the transcript, and the replay from the first of the new messages goes out. */
+  private async catchUp(sessionId: string, f: Follow) {
+    if (!f.file) return;
+    const size = sizeOf(f.file);
+    if (size < f.shown) { f.shown = f.size = Math.max(size, 0); f.stale = true; return; } // (Rewritten: nothing to add.)
+    const a = appended(f.file, f.shown);
+    f.shown = a.end;
+    this.followsChanged = true;
+    if (!a.ids.size) return;
+    f.stale = true;
+    // (An adapter that went away loads the session afresh: it is then not behind.)
+    const loaded = this.procs.get(this.processKey(f.harness, sessionId));
+    const proc = loaded?.running && loaded.loaded.has(sessionId) ? loaded : await this.session({ harness: f.harness, sessionId, cwd: f.cwd });
+    if (proc !== loaded) f.stale = false;
+    if (!proc.caps?.loadSession) return;
+    const replay: any[] = [];
+    proc.collecting.set(sessionId, replay);
+    try {
+      await proc.request('session/load', { sessionId, cwd: f.cwd, mcpServers: this.mcp(sessionId) });
+    } finally {
+      proc.collecting.delete(sessionId);
+    }
+    const from = replay.findIndex((u) => a.ids.has(u?.messageId));
+    if (from < 0) return;
+    log(`${sessionId}: ${replay.length - from} updates from another client`);
+    for (const u of replay.slice(from)) this.emit('session:' + sessionId, { kind: 'update', data: u });
+  }
+
+  /** Before a prompt: CodeRail's log and the adapter's session caught up with the transcript, unless another client
+   *  is mid-turn in it. */
+  private async catchUpFirst(p: { harness: string; sessionId: string; cwd: string }) {
+    const f = this.follows.get(p.sessionId);
+    if (!f) return;
+    await f.running;
+    // (Until the prompt is under way, the timer leaves the session to this.)
+    this.writing.add(p.sessionId);
+    try { await this.catchUpBefore(p, f); }
+    finally { this.writing.delete(p.sessionId); }
+  }
+
+  private async catchUpBefore(p: { harness: string; sessionId: string; cwd: string }, f: Follow) {
+    if (f.file && this.takeForks(p.sessionId, f, FOLLOW_LIVE)) {
+      throw new RpcError(ERR.invalid, 'This session is running in another app right now: send once its turn is done');
+    }
+    if (f.file) {
+      const size = sizeOf(f.file);
+      if (size !== f.shown) {
+        const a = appended(f.file, f.shown);
+        let mtime = 0;
+        try { mtime = statSync(f.file).mtimeMs; } catch {}
+        if (a.ids.size && !a.turnDone && Date.now() - mtime < FOLLOW_LIVE) {
+          throw new RpcError(ERR.invalid, 'This session is running in another app right now: send once its turn is done');
+        }
+        await this.catchUp(p.sessionId, f);
+      }
+    }
+    if (!f.stale) return;
+    const proc = this.procs.get(this.processKey(p.harness, p.sessionId));
+    if (proc?.running && proc.loaded.has(p.sessionId)) {
+      if (platform.os === 'win32') {
+        // (The session's own adapter: the next attach starts it again, on the transcript as it is now.)
+        await proc.stopAndWait();
+      } else if (proc.caps?.sessionCapabilities?.close) {
+        await proc.request('session/close', { sessionId: p.sessionId }).catch(() => {});
+        proc.loaded.delete(p.sessionId);
+      } else {
+        log(`${p.sessionId}: the ${p.harness} adapter can't reload one session; it may answer without the other client's turns`);
+      }
+    }
+    f.stale = false;
+  }
+
   // ---- Methods ---------------------------------------------------------------------------------------
 
   async harnesses(): Promise<HarnessInfo[]> {
@@ -348,6 +601,7 @@ export class Agents {
     }
     proc.loaded.add(r.sessionId);
     this.sessionHarness.set(r.sessionId, p.harness);
+    await this.follow(p.harness, r.sessionId, cwd);
     return { sessionId: r.sessionId, harness: p.harness, cwd, title: null, modes: r.modes, models: r.models, configOptions: r.configOptions };
   }
 
@@ -363,21 +617,27 @@ export class Agents {
       }
     }
     await this.recoveries.get(this.processKey(p.harness, p.sessionId));
+    await this.follow(p.harness, p.sessionId, cwd);
     const proc = await this.started(p.harness, p.sessionId);
     let replay: any[] = [];
     let r: any = {};
-    if (p.known) {
-      r = await this.attach(proc, p.sessionId, cwd);
-    } else if (proc.caps?.loadSession) {
-      proc.collecting.set(p.sessionId, replay);
-      try {
-        r = await proc.request('session/load', { sessionId: p.sessionId, cwd, mcpServers: this.mcp(p.sessionId) });
-      } finally {
-        replay = proc.collecting.get(p.sessionId) ?? replay;
-        proc.collecting.delete(p.sessionId);
+    try {
+      if (p.known) {
+        r = await this.attach(proc, p.sessionId, cwd);
+      } else if (proc.caps?.loadSession) {
+        proc.collecting.set(p.sessionId, replay);
+        try {
+          r = await proc.request('session/load', { sessionId: p.sessionId, cwd, mcpServers: this.mcp(p.sessionId) });
+        } finally {
+          replay = proc.collecting.get(p.sessionId) ?? replay;
+          proc.collecting.delete(p.sessionId);
+        }
+      } else {
+        r = await proc.request('session/resume', { sessionId: p.sessionId, cwd, mcpServers: this.mcp(p.sessionId) });
       }
-    } else {
-      r = await proc.request('session/resume', { sessionId: p.sessionId, cwd, mcpServers: this.mcp(p.sessionId) });
+    } catch (error) {
+      await this.dropUnloaded(p.harness, p.sessionId, proc);
+      throw error;
     }
     proc.loaded.add(p.sessionId);
     this.sessionHarness.set(p.sessionId, p.harness);
@@ -420,14 +680,27 @@ export class Agents {
 
   private async session(p: { harness: string; sessionId: string; cwd: string }): Promise<AdapterProcess> {
     await this.recoveries.get(this.processKey(p.harness, p.sessionId));
+    await this.follow(p.harness, p.sessionId, p.cwd);
     const proc = await this.started(p.harness, p.sessionId);
-    await this.attach(proc, p.sessionId, p.cwd);
+    try { await this.attach(proc, p.sessionId, p.cwd); }
+    catch (error) { await this.dropUnloaded(p.harness, p.sessionId, proc); throw error; }
     this.sessionHarness.set(p.sessionId, p.harness);
     return proc;
   }
 
+  /** On Windows a session's adapter is its alone: one that could not load it (Codex has it open in another client)
+   *  is stopped, not left running with nothing loaded. */
+  private async dropUnloaded(harness: string, sessionId: string, proc: AdapterProcess) {
+    if (platform.os !== 'win32' || proc.loaded.has(sessionId)) return;
+    await proc.stopAndWait();
+    const key = this.processKey(harness, sessionId);
+    if (this.procs.get(key) === proc) this.procs.delete(key);
+  }
+
   async prompt(p: { harness: string; sessionId: string; cwd: string; prompt: any[] }) {
     if (!Array.isArray(p.prompt) || !p.prompt.length) throw new RpcError(ERR.invalid, 'Nothing to send');
+    await this.follow(p.harness, p.sessionId, p.cwd);
+    await this.catchUpFirst(p);
     const proc = await this.session(p);
     const topic = 'session:' + p.sessionId;
     this.busy.set(p.sessionId, (this.busy.get(p.sessionId) ?? 0) + 1);
@@ -439,7 +712,7 @@ export class Agents {
     ).finally(() => {
       const n = (this.busy.get(p.sessionId) ?? 1) - 1;
       if (n > 0) this.busy.set(p.sessionId, n);
-      else this.busy.delete(p.sessionId);
+      else { this.busy.delete(p.sessionId); this.wrote(p.sessionId); }
     });
     return { ok: true };
   }
@@ -449,12 +722,17 @@ export class Agents {
   async retitle(p: { harness: string; sessionId: string; cwd: string }) {
     if (p.harness !== 'claude-code') throw new RpcError(ERR.invalid, 'Only Claude Code can name a session');
     if (this.busy.has(p.sessionId)) throw new RpcError(ERR.invalid, 'Wait until the agent is done');
+    await this.follow(p.harness, p.sessionId, p.cwd);
+    await this.catchUpFirst(p);
     const proc = await this.session(p);
     proc.quiet.add(p.sessionId);
+    this.writing.add(p.sessionId);
     try {
       await proc.request('session/prompt', { sessionId: p.sessionId, prompt: [{ type: 'text', text: '/rename' }] });
     } finally {
       proc.quiet.delete(p.sessionId);
+      this.writing.delete(p.sessionId);
+      this.wrote(p.sessionId);
     }
     const r = await proc.request('session/list', { cwd: p.cwd }).catch(() => null);
     // (It answers a slug, "plan-kyoto-spring-trip": as words, "Plan kyoto spring trip".)
@@ -546,6 +824,7 @@ export class Agents {
       proc.loaded.delete(p.sessionId);
     }
     this.sessionHarness.delete(p.sessionId);
+    if (this.follows.delete(p.sessionId)) this.saveFollows();
     this.endTasks((t) => t.sessionId === p.sessionId, 'The session was closed');
     this.browser?.release(p.sessionId);
     return { ok: true };
@@ -553,6 +832,7 @@ export class Agents {
 
   shutdown() {
     this.stopping = true;
+    if (this.followTimer) clearInterval(this.followTimer);
     for (const p of this.procs.values()) p.stop();
   }
 }

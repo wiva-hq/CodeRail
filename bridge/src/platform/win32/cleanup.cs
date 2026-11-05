@@ -34,7 +34,7 @@ public static partial class OwnedCleanup {
     [DllImport("ntdll.dll")] static extern uint RtlNtStatusToDosError(int status);
     [DllImport("ntdll.dll")] static extern int NtSetInformationFile(IntPtr file,out IO_STATUS_BLOCK status,byte[] info,int length,int type);
     static readonly IntPtr Invalid=new IntPtr(-1);
-    static readonly HashSet<string> Files=new HashSet<string>(new string[]{"installation.json","ownership.txt","update.json","update.cs","owned-log.cs","startup.cs","config.json","state.json","access.json","bridge.log","bridge.log.1","supervisor.cs","cleanup.cs","supervisor.exe","supervisor.lock","supervisor.txt","supervisor-error.txt"},StringComparer.Ordinal);
+    static readonly HashSet<string> Files=new HashSet<string>(new string[]{"installation.json","ownership.txt","update.json","update.cs","owned-log.cs","startup.cs","config.json","state.json","access.json","follows.json","bridge.log","bridge.log.1","supervisor.cs","cleanup.cs","supervisor.exe","supervisor.lock","supervisor.txt","supervisor-error.txt"},StringComparer.Ordinal);
     static readonly HashSet<string> Directories=new HashSet<string>(new string[]{"bin","runtime","adapters","updates","browser"},StringComparer.Ordinal);
     static void Check(bool ok,string name) { if(!ok)throw new IOException(name+": Win32 "+Marshal.GetLastWin32Error()); }
     static void Status(int code,string name) { if(code<0)throw new IOException(name+": Win32 "+RtlNtStatusToDosError(code)); }

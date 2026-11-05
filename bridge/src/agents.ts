@@ -521,6 +521,9 @@ export class Agents {
   /** Before a prompt: CodeRail's log and the adapter's session caught up with the transcript, unless another client
    *  is mid-turn in it. */
   private async catchUpFirst(p: { harness: string; sessionId: string; cwd: string }) {
+    // (A prompt sent while CodeRail's own turn runs: what the transcript grew by is that turn, not another client's.
+    // Taken for theirs, the session would be reloaded, and on Windows its adapter stopped, ending the turn.)
+    if (this.busy.has(p.sessionId)) return;
     const f = this.follows.get(p.sessionId);
     if (!f) return;
     await f.running;
